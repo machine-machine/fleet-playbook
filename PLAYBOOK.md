@@ -1,5 +1,5 @@
 # Machine.Machine Fleet Playbook
-> Version: 0.1.0 — Living document. Propose amendments via PR to machine-machine/fleet-playbook.
+> Version: 0.2.0 — Living document. Propose amendments via PR to machine-machine/fleet-playbook.
 
 ---
 
@@ -23,12 +23,13 @@ TASKS: ~/.openclaw/skills/planka-pm/planka-pm.sh status
 MEMORY: ~/.openclaw/skills/rlm-memory/rlm.sh "question"
 GUIDE: ~/.openclaw/skills/playbook/playbook.sh <section>
 
-5 RULES:
+6 RULES:
 1. Update your Planka card before and after every significant action
 2. If blocked >1h, escalate to m2 or flag card as Blocked
 3. Write to memory what future-you will need to know
 4. Never send half-baked output to a human channel
 5. Propose amendments to this playbook when you find a better way
+6. You are the conductor. Decompose and dispatch. Do not play the instrument yourself.
 ```
 
 ---
@@ -295,6 +296,193 @@ m2 reviews open PRs during daily reflection (02:00 UTC). Mariusz approves struct
 - A pattern that worked 3+ times → document it
 - A pattern that failed 2+ times → deprecate or add warning
 - A section you had to re-explain to an agent → it belongs in the playbook
+
+---
+
+## 10. Orchestrator Pattern
+
+**The conversation-holding agent is a conductor, not a player.**
+
+This is the most violated principle in naive agent architectures. The agent that holds the conversation accumulates context fast — every inline task it does burns tokens that could be spent understanding the next instruction. The solution is structural separation: the orchestrator thinks, routes, and synthesises. It never executes deep work itself.
+
+### The Rule
+
+```
+If task takes > 5 min       → spawn an agent
+If task requires judgement  → spawn an agent
+If task is procedural       → call a skill (not an agent)
+If task fits in one tool    → call the tool inline
+```
+
+### What the orchestrator does
+
+1. **Understands intent** — what does the human actually need?
+2. **Decomposes** — breaks the work into atomic spawnable units
+3. **Dispatches** — selects the right specialist or skill
+4. **Monitors** — checks escalation inbox, not execution details
+5. **Synthesises** — assembles results into a coherent reply
+6. **Updates Planka** — marks what was dispatched and what returned
+
+### What the orchestrator never does
+
+- Write >50 lines of code inline
+- Run a long benchmark or data pipeline
+- Generate large creative assets
+- Do anything a specialist could do better in isolation
+
+### Structured spawn handoff
+
+Every spawn gets a structured context block — not a freeform prompt. This keeps context transfer lean and predictable:
+
+```
+TASK_ID:     <planka card id or description>
+CONTEXT:     <2-3 sentences: situation, why this matters>
+DELIVERABLE: <exact output format expected>
+TOOLS:       <which skills/commands are available>
+RETURN_TO:   escalation inbox OR planka card comment OR announce
+```
+
+### When to break the rule
+
+Short conversational tasks where spawning latency exceeds task duration. A 10-second lookup does not warrant a 30-second spawn cycle. Use judgement — the rule is a default, not a dogma.
+
+---
+
+## 11. Agent Pool & Skill Evolution
+
+The fleet is not a fixed org chart. It is a living pool of capabilities that grows, specialises, and prunes itself over time.
+
+### Three Tiers
+
+```
+Tier 1 — Skills (tools)
+  What:    Deterministic scripts. Bash, Python. No reasoning required.
+  How:     Called inline by any agent. ~/.openclaw/skills/<name>/
+  Evolves: Via code commits and Dark Factory compiler.
+  Example: planka.sh, memory.sh, rlm.sh, planka-pm.sh
+
+Tier 2 — Ephemeral agents
+  What:    Spawned per task. Stateless. Optimised for one job.
+  How:     sessions_spawn() with specific prompt + tools.
+  Evolves: Via better prompts and skill upgrades.
+  Lifecycle: Spawned → executes → announces → gone
+  Example: content-org 5-agent pipeline, benchmark runner, code reviewer
+
+Tier 3 — Persistent specialists
+  What:    Memory-backed. Dedicated desktop. Evolving expertise.
+  How:     Full Coolify deployment + OpenClaw + own SOUL.md
+  Evolves: Via accumulated memory, benchmark feedback, skill additions
+  Lifecycle: Long-running. Gets better over time.
+  Example: pittbull (trading), muhlmann (client projects), peter (finance)
+```
+
+### Promotion criteria: Tier 2 → Tier 3
+
+A specialisation earns a persistent agent when:
+- The same task type has been spawned 5+ times
+- Performance is measurably better with task-specific context
+- The domain warrants dedicated memory accumulation
+- The human operator approves the spawn
+
+### Skill evolution loop
+
+```
+Task dispatched to specialist
+        ↓
+Specialist executes → result
+        ↓
+Meta-agent grades output (Section 12)
+        ↓
+Grade feeds into benchmark suite
+        ↓
+Poor patterns → skill PR (Dark Factory compiler)
+Good patterns → document in specialist memory
+        ↓
+Quarterly review → promote / demote / retire
+```
+
+### The SEAL principle (applied)
+
+Specialists don't just run skills — over time they can write improved versions of their own skills. When a Tier 3 agent finds a pattern that works better than the current script, it proposes a skill amendment via PR. The Dark Factory compiles it. The fleet upgrades.
+
+This is evolution, not just iteration.
+
+### Deprecation
+
+A specialisation is retired when:
+- It hasn't been called in 30+ days
+- A newer specialisation covers its scope
+- Its benchmark performance degrades below threshold
+
+Retired specialisations move to `platform/incubator/retired/`. Their memory stays in Qdrant — knowledge is never deleted, only agents.
+
+---
+
+## 12. Meta-Agent Layer
+
+If specialists evolve, something must watch them. The meta-agent is the 2nd-order layer above the orchestrator — it doesn't do tasks, it watches the agents that do tasks.
+
+### Role
+
+```
+Watches:   All specialist activity (Planka cards, escalations, benchmark scores)
+Grades:    Output quality per task type per specialist
+Detects:   Emerging task patterns that need new specialists
+Proposes:  Skill amendments, new specialist spawns, deprecations
+Reports:   Weekly to operator (Mariusz) via daily-reflection channel
+```
+
+### What it is (now)
+
+Currently the meta-agent role is split across:
+- `mm-weekly-org-evolution` cron — runs benchmark, detects improvements
+- `daily-reflection` cron — reviews sessions, syncs Planka
+- Content org's strategy_context.md — the org reflects on its own performance
+
+These are stubs. They work but they don't connect.
+
+### What it becomes
+
+A dedicated Tier 3 persistent agent — the **Fleet Monitor** — that:
+
+1. Subscribes to all Planka board activity (cards moved to Done → log outcome)
+2. Reads escalation inbox for inter-agent outcomes
+3. Runs the benchmark suite weekly → tracks specialist performance over time
+4. Maintains a `fleet-health.md` with per-specialist metrics
+5. Proposes new Tier 2/3 specialists via Planka card when pattern repeats 5+
+6. Opens PRs on fleet-playbook when a pattern should be documented
+
+### Minimal implementation (now)
+
+Until the Fleet Monitor is built as a Tier 3 agent, the meta-agent role runs via cron:
+
+```bash
+# Add to daily-reflection cron:
+# 1. Read all Done cards from last 24h on Master Roadmap
+# 2. For each: note which agent handled it, grade outcome (completed/partial/failed)
+# 3. Update fleet-health.json with rolling stats
+# 4. If any specialist has 3 consecutive partial/failed → flag to operator
+# 5. If same task type appears 5x in backlog with no specialist → propose new one
+```
+
+`fleet-health.json` schema:
+```json
+{
+  "specialists": {
+    "pittbull": { "tasks_completed": 12, "tasks_partial": 1, "last_active": "2026-02-19" },
+    "muhlmann":  { "tasks_completed": 3,  "tasks_partial": 0, "last_active": "2026-02-19" }
+  },
+  "emerging_patterns": ["video-generation", "pdf-extraction"],
+  "proposed_specialists": [],
+  "last_updated": "2026-02-19"
+}
+```
+
+### The compounding effect
+
+Orchestrator routes → Specialists execute → Meta-agent grades → Skills evolve → Specialists improve → Orchestrator routes better.
+
+Each cycle, the fleet gets more capable. This is not metaphor — it is the mechanism. The benchmark suite measures it. The playbook encodes it. The Dark Factory builds it.
 
 ---
 
