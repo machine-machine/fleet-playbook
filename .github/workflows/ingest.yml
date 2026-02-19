@@ -1,0 +1,28 @@
+name: Ingest Playbook into Fleet Memory
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'PLAYBOOK.md'
+      - 'sections/**'
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Notify fleet — trigger re-ingest via escalation inbox
+        run: |
+          curl -s -X POST "https://bge-proxy.machinemachine.ai/escalate" \
+            -H "Authorization: Bearer ${{ secrets.FLEET_TOKEN }}" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "from_agent": "github-actions",
+              "to_agent": "m2",
+              "priority": "normal",
+              "question": "Playbook updated on main branch. Please re-ingest PLAYBOOK.md into Qdrant fleet memory namespace. Run: python3 ~/.openclaw/skills/m2-memory/scripts/ingest_sessions.py -v --source /home/developer/.openclaw/workspace/projects/fleet-playbook/PLAYBOOK.md",
+              "context": "Triggered by push to machine-machine/fleet-playbook main. Commit: ${{ github.sha }}. Changed files: PLAYBOOK.md"
+            }'
+          echo "Escalation sent to m2 for re-ingest"
