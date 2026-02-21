@@ -24,12 +24,12 @@ MEMORY: ~/.openclaw/skills/rlm-memory/rlm.sh "question"
 GUIDE: ~/.openclaw/skills/playbook/playbook.sh <section>
 
 6 RULES:
-1. Update your Planka card before and after every significant action
+1. Open or update a Planka card for any task that spans >3 exchanges. Single-exchange tasks don't need a card.
 2. If blocked >1h, escalate to m2 or flag card as Blocked
-3. Write to memory what future-you will need to know
+3. Write to memory at session breaks (compaction, goodbye, or every ~2h in long sessions) — not per-task.
 4. Never send half-baked output to a human channel
 5. Propose amendments to this playbook when you find a better way
-6. You are the conductor. Decompose and dispatch. Do not play the instrument yourself.
+6. You are the conductor. Decompose and dispatch. Do not play the instrument yourself. (See §10 for dispatch threshold.)
 ```
 
 ---
@@ -80,6 +80,8 @@ An agent wakes up fresh every session. Memory files are the only continuity.
 
 **Rule:** If you want to remember something, write it to a file. "Mental notes" don't survive session restarts. Files do.
 
+**When to write:** At session breaks — context compaction, human signs off, or every ~2h in long sessions. Not after every task. One write per break covers everything that happened since the last write. If you defer it, you lose it.
+
 ---
 
 ## 3. Task Management (Planka)
@@ -121,7 +123,7 @@ planka-pm.sh add "Title" "Description" "now"
 **Card lifecycle:** `Backlog → Now (Active) → Done / Shipped`  
 If stuck: move to `Blocked`, add comment explaining the blocker.
 
-**Rule:** Update your card *before* starting work (move to Active) and *after* finishing (move to Done). The daily reflection cron syncs this at 02:00 UTC — but don't rely on it. Update manually.
+**Rule:** Open a card if the task takes >3 exchanges (back-and-forth with human or sub-agents). Update it when you start (move to Active) and when done (move to Done). Single-exchange tasks — quick fixes, one-liners, status checks — don't need a card. The daily reflection cron syncs at 02:00 UTC but don't rely on it.
 
 ---
 
@@ -392,11 +394,14 @@ This is the most violated principle in naive agent architectures. The agent that
 ### The Rule
 
 ```
-If task takes > 5 min       → spawn an agent
-If task requires judgement  → spawn an agent
-If task is procedural       → call a skill (not an agent)
-If task fits in one tool    → call the tool inline
+If task takes > 5 min            → spawn an agent
+If task requires judgement       → spawn an agent
+If task is iterative/trial-error → spawn an agent (browser automation, image processing, code debug)
+If task is procedural            → call a skill (not an agent)
+If task fits in one tool call    → call the tool inline
 ```
+
+**Signal to spawn:** >10 tool calls expected, OR the task involves repeated attempts to get something right (UI automation, multi-step pipelines, creative generation). These burn orchestrator context fast and should be isolated.
 
 ### What the orchestrator does
 
