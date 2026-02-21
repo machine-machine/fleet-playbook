@@ -589,6 +589,7 @@ Quick reference:
 | Skill install | All skills = git repos, cloned on cold boot, pulled on warm boot |
 | Guacamole | Standalone service `m2o-guacamole` → `g2.machinemachine.ai` |
 | Fleet control | Streamlit → `fleet.machinemachine.ai` (planned) |
+| **m2o-autoheal** | **Supervisord service (priority 35) — checks gateway config every 15 min, backs up + repairs if broken. Source: `m2-desktop/scripts/m2o-autoheal.sh`** |
 | Reference machine | m2 — do not touch until all agents on new arch |
 
 **Cold vs warm start:**
