@@ -1,5 +1,6 @@
-# Machine.Machine OS — Architecture Spec v1.1
+# Machine.Machine OS — Architecture Spec v1.2
 *Self-audit based on m2 (reference instance) + fleet analysis — 2026-02-21*
+*Updated 2026-02-21: Added §3.11 m2o-autoheal self-healing gateway monitor*
 *Lives in: machine-machine/fleet-playbook @ sections/architecture.md*
 
 ---
@@ -460,6 +461,48 @@ T+2:00  Configs written, OpenClaw gateway starts
 T+3:00  "⚡ peter is online" Telegram message to master
 T+5:00  Background: memories seeded, skills updated, fleet-playbook pulled
 ```
+
+---
+
+### 3.11 m2o-autoheal — Self-Healing Gateway Monitor
+
+**Every agent container runs `m2o-autoheal` as a supervisord service (priority 35, runs before the gateway).**
+
+It wakes every 15 minutes, checks gateway config health, and self-repairs — no human intervention needed for the most common failure mode (invalid `openclaw.json`).
+
+**What it monitors:**
+- `openclaw.json` for invalid/rejected keys (e.g. stale `meta` block from config generator)
+- Gateway process alive (via `pgrep`)
+- Crash-loop indicator (repeated `exit status 1` in gateway log)
+
+**Repair flow:**
+```
+1. Detect broken config (python3 JSON parse + key check)
+2. Backup: ~/.openclaw/backups/openclaw.json.backup.YYYYMMDD-HHMMSS
+3. Repair: openclaw doctor --fix  (fallback: manual JSON strip)
+4. Log outcome to /var/log/m2o-autoheal.log
+5. Gateway auto-restarts via supervisord (autorestart=true)
+```
+
+**Backup retention:** Last 20 dated backups kept, older ones pruned automatically.
+
+**Source:** `machine-machine/m2-desktop:base` → `scripts/m2o-autoheal.sh`  
+**Baked into image at:** `/usr/local/bin/m2o-autoheal.sh`  
+**Supervisord entry:**
+```ini
+[program:m2o-autoheal]
+command=/bin/bash /usr/local/bin/m2o-autoheal.sh
+user=root
+autorestart=true
+priority=35          # starts before clawdbot-gateway (priority=40)
+startsecs=5
+stdout_logfile=/var/log/m2o-autoheal.log
+stderr_logfile=/var/log/m2o-autoheal.log
+```
+
+**Tunable via env var:** `M2O_AUTOHEAL_INTERVAL` (default: 900 seconds / 15 min)
+
+**Why this matters:** The config generator was adding invalid `meta` keys on every `AGENT_CONFIG_GENERATE=true` restart. Without autoheal, this caused a permanent gateway crash loop that required manual exec into the container to fix. With autoheal, the next check cycle detects and fixes it automatically.
 
 ---
 
