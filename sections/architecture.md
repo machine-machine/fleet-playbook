@@ -162,8 +162,8 @@ AGENT_STT_BASE_URL: http://speaches-.../v1
 AGENT_OPENCLAW_REPO: https://github.com/machine-machine/openclaw.git
 AGENT_OPENCLAW_BRANCH: m2-custom
 
-# Skills to install on cold boot
-AGENT_SKILLS: m2-memory,rlm-memory,planka,planka-pm,playbook,xfce-desktop,stt
+# Skills to install on cold boot (all agents, non-negotiable defaults)
+AGENT_SKILLS: m2-memory,rlm-memory,bmad-elicit,planka,planka-pm,playbook,xfce-desktop,stt
 ```
 
 ---
@@ -472,6 +472,53 @@ T+5:00  Background: memories seeded, skills updated, fleet-playbook pulled
 | 6 | Fleet control Streamlit `m2o-fleet` | ❌ | 1 week |
 | 7 | Host bind mounts `/opt/m2o/` (needs Coolify host SSH) | ❌ | coordinate |
 | 8 | Migrate m2 to new architecture | ✅ last | when stable |
+
+---
+
+## 4b. Client Self-Onboarding Flow
+
+**Goal:** A stranger on the internet gets their own AI agent in under 10 minutes, zero technical knowledge required.
+
+```
+machinemachine.ai → "Get Your Agent"
+        ↓
+t.me/mm_onboarding_bot?start=onboard
+        ↓
+Telegram Mini App:
+  Step 1: Email → OTP via Brevo → verify → Twenty CRM contact created
+  Step 2: BotFather tutorial (embedded 30s screen recording)
+           "Go to @BotFather → /newbot → follow steps → forward the confirmation here"
+  Step 3: Forward BotFather confirmation → parse token + bot username
+           Fallback: manual token input field
+           Validate: api.telegram.org/bot{token}/getMe → confirms ownership
+  Step 4: Choose agent name (display name)
+  Step 5: Confirm screen → "Setting up your agent..."
+        ↓
+Backend (machinemachine-api):
+  CRM state: email_verified → token_validated → name_chosen → provisioning
+  Trigger: spawn-machine.sh {name} {token}  (or queue for review)
+        ↓
+Client receives:
+  - Message on their new bot: "⚡ Your agent {name} is live. Say hello!"
+  - Email via Brevo: welcome + deeplink to their bot
+```
+
+**CRM state machine (Seven CRM states → seven Brevo triggers):**
+```
+email_pending → email_verified → token_validated → name_chosen
+  → provisioning → live → [active | degraded | churned]
+```
+
+**Security hardening:**
+- Email OTP before BotFather step (proves ownership, blocks fake email abuse)
+- Token validated via `getMe` before accepted (no trust in forwarded text alone)
+- Rate limiting: 1 agent/email, 3 attempts/Telegram user/day
+- Provision gate: CRM status = `pending_review` → m2 approves → spawn (or auto on payment)
+- Weekly fleet health: `getMe` check per agent → token revocation detected early
+- Web fallback: `onboard.machinemachine.ai` for non-Mini-App Telegram clients
+
+**fleet.machinemachine.ai as Telegram Mini App:**
+Fleet control panel accessible as inline Telegram web app. Same Streamlit UI, embedded via Mini App protocol. Spawn, monitor, escalate — without leaving Telegram.
 
 ---
 
