@@ -262,6 +262,90 @@ When the fleet needs a new specialist:
 
 ---
 
+## 7b. Onboarding Protocol
+
+When a new agent joins the fleet, it goes through a three-phase onboarding pipeline.
+The goal: the agent arrives warm-started, not cold-booted.
+
+### The Three Phases
+
+```
+Phase 0: Discovery     (2-5 min)    → Mine context, build bootstrap-memory.jsonl
+Phase 1: Deployment    (15-30 min)  → 7-step spawn workflow (define → validate)
+Phase 2: First Contact (~60s)       → Agent sends warm intro to operator
+```
+
+### Phase 0: Pre-Spawn Discovery
+
+Before asking the operator anything, search existing context:
+- Vector memory for prior discussions about this agent
+- Planka for related active work
+- Existing skills that overlap with the agent's domain
+
+Output: `platform/incubator/{name}/bootstrap-memory.jsonl` — a JSONL file of seed memories
+that gets ingested into the agent's Qdrant namespace on first boot.
+
+### Phase 1: Deployment
+
+The standard spawn-machine workflow (Steps 01-07). Phase 0 outputs reduce friction:
+- Agent profile pre-filled from discovery
+- Service recommendations pre-computed
+- Identity file drafts are better on first try
+
+**Skill:** `~/.openclaw/skills/spawn-machine/`
+**BMAD workflow:** `_bmad/bmm/workflows/spawn-machine/`
+
+### Phase 2: First Contact
+
+~60 seconds after validation, the new agent sends its first message:
+
+```
+{AgentName} online. I know you're working on {X}. My first suggestion: {Y}.
+```
+
+- `{X}` = operator's top project from bootstrap memory
+- `{Y}` = concrete suggestion from the agent's specialization
+
+Delivery: Telegram text (default). Voice notes if TTS is enabled. Google Meet for future high-touch onboarding.
+
+### When to Use This Protocol
+
+| Scenario | What to Do |
+|----------|------------|
+| New Tier 3 persistent agent | Full protocol (Phase 0 + 1 + 2) |
+| Tier 2 → Tier 3 promotion | Phase 0 + Phase 1 (Tier 2 context feeds bootstrap memory) |
+| Quick test deployment | Phase 1 only (skip discovery, minimal identity) |
+| Redeploying existing agent | Phase 1 Steps 5-7 only (preserve identity, redeploy container) |
+
+### Key Outputs
+
+| Output | Location | Purpose |
+|--------|----------|---------|
+| `bootstrap-memory.jsonl` | `platform/incubator/{name}/` | Warm-start memory payload |
+| `agent-spec.md` | `platform/incubator/{name}/` | Agent definition + workflow state |
+| `first-contact.log` | `platform/incubator/{name}/` | Record of first intro message |
+| Identity files | `platform/incubator/{name}/` | SOUL.md, IDENTITY.md, USER.md, AGENTS.md, MEMORY.md |
+
+### Bootstrap Memory Ingest
+
+New agents ingest `bootstrap-memory.jsonl` on first boot via their AGENTS.md:
+
+```bash
+BOOTSTRAP="platform/incubator/{name}/bootstrap-memory.jsonl"
+if [ -f "$BOOTSTRAP" ]; then
+  while IFS= read -r line; do
+    content=$(echo "$line" | jq -r '.content')
+    importance=$(echo "$line" | jq -r '.importance // 0.7')
+    ~/.openclaw/skills/m2-memory/memory.sh store "$content" --importance "$importance"
+  done < "$BOOTSTRAP"
+  mv "$BOOTSTRAP" "${BOOTSTRAP}.ingested"
+fi
+```
+
+**Full protocol docs:** `docs/ONBOARDING_PROTOCOL.md`
+
+---
+
 ## 8. Fleet Governance
 
 **Constitution:** `machine-machine/fleet-governance/CONSTITUTION.md`
@@ -486,13 +570,40 @@ Each cycle, the fleet gets more capable. This is not metaphor — it is the mech
 
 ---
 
+## 13. Infrastructure Architecture
+
+The full infrastructure spec lives in: **[sections/architecture.md](sections/architecture.md)**
+
+Quick reference:
+
+| Component | Pattern |
+|-----------|---------|
+| Persistence | `M2_HOME=/agent_home` + host bind mount `/opt/m2o/{name}/home` |
+| Identity | Env vars only (`AGENT_NAME`, keys) — no per-agent branches |
+| Claude CLI | Pre-installed in Dockerfile; `claude update` on warm restart |
+| Skill install | All skills = git repos, cloned on cold boot, pulled on warm boot |
+| Guacamole | Standalone service `m2o-guacamole` → `g2.machinemachine.ai` |
+| Fleet control | Streamlit → `fleet.machinemachine.ai` (planned) |
+| Reference machine | m2 — do not touch until all agents on new arch |
+
+**Cold vs warm start:**
+- **Warm** (restart): `claude update` + `git pull` skills + relink openclaw + start services
+- **Cold** (new agent): full bootstrap — clone OpenClaw, install skills, write configs, register in Guacamole
+
+**Prime directive:** m2 is untouched until Phase 7 (all agents stable first).
+
+> Full spec + migration plan: `sections/architecture.md`
+
+---
+
 ## Appendix: Key URLs & IDs
 
 | Resource | URL / ID |
 |----------|----------|
 | Planka | kanban.machinemachine.ai |
 | Coolify | cool.machinemachine.ai |
-| Guacamole | m22.machinemachine.ai |
+| Guacamole | g2.machinemachine.ai (m2o-guacamole standalone) |
+| Fleet control | fleet.machinemachine.ai (planned) |
 | BGE proxy | bge-proxy.machinemachine.ai |
 | Pitch deck | pitch.machinemachine.ai |
 | MM website | machinemachine.ai |
@@ -504,4 +615,4 @@ Each cycle, the fleet gets more capable. This is not metaphor — it is the mech
 
 ---
 
-*Last updated: 2026-02-19 | Maintainer: m2 | Propose changes: machine-machine/fleet-playbook*
+*Last updated: 2026-02-21 | Maintainer: m2 | Propose changes: machine-machine/fleet-playbook*
