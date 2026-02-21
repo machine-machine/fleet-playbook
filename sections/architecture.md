@@ -544,3 +544,17 @@ Fleet control panel accessible as inline Telegram web app. Same Streamlit UI, em
 ---
 
 *Spec v1.1 — 2026-02-21. Owner: m2. Do not edit the copy in docs/ directly — edit fleet-playbook sections/architecture.md and sync.*
+
+## 4c. Spawn Approval Control — ADR
+
+**Decision:** Three-phase spawn approval surface. Single `/spawn/approve/{contact_id}` endpoint — any surface calls it, CRM reflects truth.
+
+| Phase | Surface | When |
+|-------|---------|------|
+| 1 | Telegram inline Approve/Reject (m2 escalation to master) | Now — zero new UI |
+| 2 | Twenty CRM custom action on `pending_review` contact | After Mini App built |
+| 3 | Auto-approval (email verified + token valid + billing) | When billing live |
+
+**Fleet app is NOT an approval surface** — it monitors running infrastructure only.
+
+**Planka card:** `1715268064934626884` — Master Roadmap / Next 2 Weeks
