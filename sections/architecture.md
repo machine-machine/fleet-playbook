@@ -248,9 +248,13 @@ startup.sh
 
 ```
 Status:
-  ✅ git-tracked:  m2-memory, rlm-memory, planka, bmad-elicit, spawn-machine, x-monitor
-  ❌ need repos:   planka-pm, playbook, xfce-desktop, stt, coolify, homeassistant,
-                   tts-manager, x-scraper, browser-persistence, twenty, video-ad-creator
+  ✅ ALL fleet skills now git-tracked (2026-02-21):
+     openclaw-m2-memory-skill, openclaw-rlm-memory-skill, openclaw-spawn-machine-skill
+     openclaw-bmad-elicit-skill, planka, x-monitor  (legacy naming)
+     m2o-skill-planka-pm, m2o-skill-playbook, m2o-skill-xfce-desktop
+     m2o-skill-stt, m2o-skill-coolify, m2o-skill-tts-manager
+     m2o-skill-x-scraper, m2o-skill-browser-persistence, m2o-skill-twenty
+  🚫 m2-only (not fleet): homeassistant, video-ad-creator, kiedis-po, qwen-tts
 ```
 
 **Warm restart skill refresh:**
