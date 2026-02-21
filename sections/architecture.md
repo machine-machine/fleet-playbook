@@ -168,28 +168,42 @@ AGENT_SKILLS: m2-memory,rlm-memory,planka,planka-pm,playbook,xfce-desktop,stt
 
 ---
 
-### 3.3 Runtime Layer — Claude CLI
+### 3.3 Runtime Layer — Two-Tier Docker Image
 
-**Claude Code CLI is pre-installed in the Docker image** (Dockerfile):
-```dockerfile
-# Install Claude Code CLI at image build time
-RUN curl -fsSL https://claude.ai/install.sh | sh \
-    || npm install -g @anthropic-ai/claude-code
+**"Minutes onboarding" requires pre-baking slow steps into the image — not running them at container start.**
+
+```
+Tier 1: base image  (machine-machine/m2-desktop:base)
+  Ubuntu + XFCE + VNC + guacd + system deps
+  Claude CLI (curl install at build time)
+  Rebuilt: rarely (major system changes only)
+
+Tier 2: agent image  (machine-machine/m2-desktop:agent-latest)
+  FROM base
+  + OpenClaw:m2-custom cloned + npm ci (done at build time)
+  + All skill repos pre-cloned
+  Rebuilt: weekly via GitHub Actions CI
 ```
 
-This ensures even a cold-booted agent without a persisted home can run `claude` immediately.
+All agents pull `agent-latest`. Cold boot = `git pull` (seconds) not `git clone + npm ci` (15 min).
 
-**On warm restart** — `startup.sh` always runs:
+**Staged base always warm in Coolify:** A permanent `base-staging` app keeps image layers cached. Real agent deploys pull from cache — not a fresh build.
+
+**Claude CLI pre-installed at image build time:**
+```dockerfile
+RUN curl -fsSL https://claude.ai/install.sh | sh
+```
+
+**On warm restart** — non-blocking background update:
 ```bash
-# Update Claude to latest — non-blocking, best-effort
 claude update --skip-permissions 2>/dev/null &
 ```
-
-**Result:** Cold boot = Claude available from image. Warm boot = latest Claude auto-updated in background. The binary lives in `~/.local/bin/claude` (persisted via m2_home pattern), so after first install it's always there.
 
 ---
 
 ### 3.4 Bootstrap Layer
+
+**Critical path principle:** The only thing on the blocking path to "Telegram-reachable" is: config write → VNC start → gateway start. Everything else is background.
 
 ```bash
 startup.sh
@@ -201,23 +215,29 @@ startup.sh
 │     if ~/.openclaw/openclaw.json exists → WARM
 │     else → COLD
 │
-├── WARM START (restart):
-│     claude update --skip-permissions &   ← background, non-blocking
-│     git pull --ff-only on all skill repos (non-destructive)
+├── WARM START (fast path, ~60s):
+│     claude update --skip-permissions &        ← background
+│     git pull --ff-only skills/* &             ← background, parallel
+│     git pull openclaw:m2-custom --ff-only &   ← background
 │     relink openclaw fork symlink
-│     start VNC + guacd + OpenClaw gateway
+│     start VNC + guacd + OpenClaw gateway      ← only blocking steps
 │
-└── COLD START (new agent):
-      1.  Clone openclaw:m2-custom → ~/.openclaw/platform/openclaw && npm ci
-      2.  ln -sfn ~/.openclaw/platform/openclaw /usr/lib/node_modules/openclaw
-      3.  Clone fleet-playbook → ~/.openclaw/platform/fleet-playbook
-      4.  Install skills (git clone each from AGENT_SKILLS)
-      5.  generate-openclaw-config.js  (from env vars → openclaw.json)
-      6.  write_config_files()  (planka, coolify, bge-proxy, cerebras configs)
-      7.  Ingest bootstrap memories (JSONL from fleet-playbook or env URL)
-      8.  Register in Guacamole (register-guacamole.sh)
-      9.  Write identity files (SOUL.md, AGENTS.md, USER.md from template)
-      10. Start VNC + guacd + OpenClaw gateway
+└── COLD START (new agent, target <5 min):
+      # BLOCKING (sequential, critical path):
+      1.  validate_env_vars() — missing required → escalate to m2 + exit
+      2.  git pull --ff-only on pre-cloned OpenClaw (image has it already)
+      3.  ln -sfn ~/.openclaw/platform/openclaw /usr/lib/node_modules/openclaw
+      4.  generate-openclaw-config.js  (from env vars → openclaw.json)
+      5.  write_config_files()  (planka, coolify, bge-proxy, cerebras)
+      6.  Write identity files (SOUL.md, AGENTS.md, USER.md from template)
+      7.  Start VNC + guacd + OpenClaw gateway
+      8.  Notify master: "⚡ {AGENT_NAME} is online. Guacamole: g2.machinemachine.ai
+                          Connection: {AGENT_NAME}. Seeding memories in background."
+
+      # BACKGROUND (non-blocking, parallel after gateway starts):
+      9.  git pull --ff-only skills/* &
+      10. ingest_bootstrap_memories.py &   ← doesn't block Telegram
+      11. clone fleet-playbook if missing &
 ```
 
 ---
@@ -377,19 +397,64 @@ Panel 6 — Logs
 
 ---
 
-### 3.10 Spawn Flow
+### 3.10 Spawn Flow — "Minutes Onboarding"
+
+**Goal:** Master provides 2 things (agent name + Telegram token). Everything else is automated.
 
 ```bash
-spawn_agent() {
-  NAME=$1; TOKEN=$2; KEY=$3; SKILLS=$4
+# Single command:
+spawn-machine.sh <name> <telegram_bot_token>
 
-  # 1. Host: create bind mount dir (needs SSH or Coolify pre_deployment_command)
-  # 2. Create Coolify app from machine-machine/m2-desktop:base
-  #    with M2_HOME=/agent_home, AGENT_NAME=$NAME, all keys
-  # 3. Deploy → cold boot → full bootstrap runs automatically
-  # 4. Agent registers itself in Guacamole (bootstrap step 8)
-  # 5. m2 adds agent to registry.yaml
+spawn_agent() {
+  NAME=$1; TOKEN=$2
+
+  # 1. Validate: check name not already in registry
+  grep -q "^  $NAME:" ~/.openclaw/workspace/platform/incubator/registry.yaml && exit 1
+
+  # 2. Pre-register Guacamole connection (no need to wait for agent to do it)
+  register-guacamole.sh pre-register "$NAME" "${NAME}-desktop"
+
+  # 3. Create Coolify app from machine-machine/m2-desktop:agent-latest
+  UUID=$(coolify.sh create-compose-app \
+    --name "${NAME}-desktop" \
+    --repo machine-machine/m2-desktop \
+    --branch agent-latest \
+    --attach-env-group m2o-shared)   # ← gets Qdrant, BGE, TTS, Planka, Coolify creds
+
+  # 4. Set the 2 agent-specific env vars (everything else from shared group)
+  coolify.sh env-set $UUID AGENT_NAME "$NAME"
+  coolify.sh env-set $UUID AGENT_TELEGRAM_BOT_TOKEN "$TOKEN"
+  # ANTHROPIC_API_KEY comes from shared group (all agents use same key)
+
+  # 5. Set pre_deployment_command (host bind mount setup)
+  coolify.sh set $UUID pre_deployment_command \
+    "mkdir -p /opt/m2o/$NAME/home && chown -R 1000:1000 /opt/m2o/$NAME/home"
+
+  # 6. Deploy → cold bootstrap runs → agent notifies master when live
+  coolify.sh deploy $UUID
+
+  # 7. Add to registry
+  add_to_registry "$NAME" "$UUID"
+
+  echo "Deploying $NAME. Agent will notify you on Telegram when ready (~5 min)."
 }
+```
+
+**Master's total input:**
+```
+Name:           peter
+Telegram token: 7890123456:AAH...
+```
+That's it. No SSH, no Guacamole UI, no env var hunting.
+
+**Timeline after `spawn-machine.sh peter <token>`:**
+```
+T+0:00  spawn-machine.sh runs (Coolify app created + deploy triggered)
+T+0:30  Coolify pulls agent-latest image (cached layers — fast)
+T+1:00  Container starts, entrypoint runs (first boot: copy /home to volume)
+T+2:00  Configs written, OpenClaw gateway starts
+T+3:00  "⚡ peter is online" Telegram message to master
+T+5:00  Background: memories seeded, skills updated, fleet-playbook pulled
 ```
 
 ---
@@ -399,13 +464,14 @@ spawn_agent() {
 | Phase | What | Touches m2? | Est. |
 |-------|------|-------------|------|
 | 0 | Fix agents: add `M2_HOME=/agent_home` + volume at `/agent_home` | ❌ | 30 min |
-| 1 | Extract `m2o-guacamole` standalone repo + Coolify deploy | ❌ | Done today |
-| 2 | `base` branch: updated entrypoint + cold/warm + write_config_files | ❌ | 2 days |
-| 3 | Claude pre-install in Dockerfile + `claude update` on warm start | ❌ | in phase 2 |
-| 4 | Push 11 missing skill repos to GitHub | m2 skills only | 3 days |
-| 5 | Fleet control Streamlit `m2o-fleet` | ❌ | 1 week |
-| 6 | Host bind mounts `/opt/m2o/` (needs Coolify host SSH) | ❌ | coordinate |
-| 7 | Migrate m2 to new architecture | ✅ last | when stable |
+| 1 | Extract `m2o-guacamole` standalone repo + Coolify deploy | ❌ | ✅ Done |
+| 2 | `base` branch: Dockerfile + two-tier image + cold/warm bootstrap | ❌ | 2 days |
+| 3 | GitHub Actions CI: weekly rebuild of `agent-latest` image | ❌ | in phase 2 |
+| 4 | `spawn-machine.sh` single command (Coolify + registry + Guacamole) | ❌ | in phase 2 |
+| 5 | Push 11 missing skill repos to GitHub | m2 skills only | 3 days |
+| 6 | Fleet control Streamlit `m2o-fleet` | ❌ | 1 week |
+| 7 | Host bind mounts `/opt/m2o/` (needs Coolify host SSH) | ❌ | coordinate |
+| 8 | Migrate m2 to new architecture | ✅ last | when stable |
 
 ---
 
