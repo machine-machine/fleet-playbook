@@ -863,3 +863,83 @@ email → bot ───────┤
 **Fleet app is NOT an approval surface** — it monitors running infrastructure only.
 
 **Planka card:** `1715268064934626884` — Master Roadmap / Next 2 Weeks
+
+---
+
+## §8. OpenClaw Release + Update Rhythm
+
+### 8.1 Design Goal
+
+OpenClaw m2-custom stays current with upstream without manual intervention. New spawns always boot with the latest build. Running agents update in-place at 3am — no session loss.
+
+### 8.2 Daily Pipeline
+
+```
+01:00 UTC — machine-machine/openclaw: sync-upstream.yml
+  └─ Fetches openclaw/openclaw:main
+  └─ Merges into m2-custom (abort if conflict, keep custom)
+  └─ Tags: m2-custom-YYYY-MM-DD
+  └─ Dispatches 'openclaw-updated' event → m2-desktop
+
+02:30 UTC — machine-machine/m2-desktop: build-agent.yml
+  └─ Triggered by dispatch OR daily schedule
+  └─ Builds Dockerfile (clones m2-custom, pnpm build)
+  └─ Pushes ghcr.io/machine-machine/m2-desktop:agent-latest
+  └─ New spawns pull this image — OpenClaw baked in
+
+03:00 UTC — each running agent: openclaw-update.sh (via supervisord)
+  └─ git fetch origin m2-custom
+  └─ If new commits: git pull + pnpm install + pnpm build
+  └─ supervisorctl restart clawdbot-gateway
+  └─ No container restart — sessions unaffected
+  └─ Logs to /var/log/openclaw-update.log
+  └─ Rolls back on build failure
+```
+
+### 8.3 Component Locations
+
+| Component | Location | Branch |
+|-----------|----------|--------|
+| Sync workflow | machine-machine/openclaw/.github/workflows/sync-upstream.yml | m2-custom |
+| Build workflow | machine-machine/m2-desktop/.github/workflows/build-agent.yml | base |
+| In-agent updater | machine-machine/m2-desktop/scripts/openclaw-update.sh | base |
+| Supervisord entry | machine-machine/m2-desktop/scripts/supervisord.conf `[openclaw-updater]` | base |
+| Prebuild location | /opt/openclaw-prebuild (inside agent-latest image) | — |
+| Runtime fork | ${WORKSPACE}/platform/openclaw (agent named volume) | m2-custom |
+
+### 8.4 Cold Boot Behaviour
+
+On first boot (openclaw.json missing):
+1. entrypoint.sh detects `/opt/openclaw-prebuild/dist` exists → `cp` to workspace fork (fast, no network)
+2. symlinks `/usr/lib/node_modules/openclaw` → workspace fork
+3. `generate-openclaw-config.js` writes `openclaw.json`
+4. Gateway starts immediately — no build delay
+
+### 8.5 Conflict Strategy
+
+If upstream merges with conflicts:
+- Workflow aborts merge, keeps m2-custom unchanged
+- No tag created, no dispatch, no rebuild
+- m2 heartbeat monitors for failed sync runs and alerts master with diff summary
+- Master resolves manually via `git merge upstream/main` on local clone
+
+### 8.6 Required GitHub Secret
+
+`M2_DESKTOP_DISPATCH_TOKEN` must be set in `machine-machine/openclaw` repo secrets:
+- GitHub → machine-machine/openclaw → Settings → Secrets → Actions
+- Value: PAT with `repo` scope on `machine-machine/m2-desktop`
+- Without this: sync + tag still work, but image rebuild must be triggered manually
+
+### 8.7 Manual Trigger
+
+Force a sync + rebuild at any time:
+```bash
+# Trigger sync (even without new upstream commits)
+gh workflow run sync-upstream.yml --repo machine-machine/openclaw --field force=true
+
+# Trigger image rebuild directly
+gh workflow run build-agent.yml --repo machine-machine/m2-desktop
+```
+
+---
+*Added 2026-02-22. Commits: openclaw de667ef, m2-desktop 1b742ebd.*
