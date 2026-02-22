@@ -480,19 +480,51 @@ Task dispatched to specialist
         ↓
 Specialist executes → result
         ↓
+Capture learnings immediately (self-improve.sh learn)
+        ↓
 Meta-agent grades output (Section 12)
         ↓
 Grade feeds into benchmark suite
         ↓
 Poor patterns → skill PR (Dark Factory compiler)
-Good patterns → document in specialist memory
+Good patterns → document in specialist memory (m2-memory)
         ↓
-Quarterly review → promote / demote / retire
+Weekly review → AMENDMENT_DRAFT.md → apply or gate
+        ↓
+Monthly fleet-review → playbook PR → promote / demote / retire
 ```
+
+### Self-Improvement Skill
+
+Every Tier 3 agent runs the `self-improve` skill as part of its autonomy loop.
+
+```bash
+# Capture immediately when something goes wrong or gets corrected
+self-improve.sh learn "<what happened>" --failure|--correction [--fix "<fix>"]
+
+# Recall past learnings semantically (m2-memory powered)
+self-improve.sh recall "docker network issues"
+
+# Weekly: synthesize → draft amendments
+self-improve.sh review   # → docs/AMENDMENT_DRAFT.md
+
+# Monthly: fleet aggregate → playbook PR
+self-improve.sh fleet-review
+```
+
+**Dual storage:**
+- `memory/learnings.md` — markdown audit trail, always grep-able
+- Qdrant vector store (via m2-memory) — semantic recall, cross-session, cross-agent SYNTHESIS routing
+
+**Risk gating:**
+- Low-risk amendments (wording, script fixes) → apply directly + commit
+- High-risk (new capabilities, behavior changes) → PR + master approval
+
+Skill repo: `machine-machine/openclaw-self-improve-skill`
 
 ### The SEAL principle (applied)
 
-Specialists don't just run skills — over time they can write improved versions of their own skills. When a Tier 3 agent finds a pattern that works better than the current script, it proposes a skill amendment via PR. The Dark Factory compiles it. The fleet upgrades.
+Specialists don't just run skills — over time they can write improved versions of their own skills. When a Tier 3 agent finds a pattern that works better than the current script, it captures a learning via `self-improve.sh learn`, the weekly review surfaces it, and the Dark Factory compiles the PR. The fleet upgrades.
 
 This is evolution, not just iteration.
 
@@ -526,9 +558,11 @@ Reports:   Weekly to operator (Mariusz) via daily-reflection channel
 Currently the meta-agent role is split across:
 - `mm-weekly-org-evolution` cron — runs benchmark, detects improvements
 - `daily-reflection` cron — reviews sessions, syncs Planka
+- `self-improve.sh review` — weekly per-agent amendment synthesis (m2-memory backed)
+- `self-improve.sh fleet-review` — monthly cross-agent pattern detection + playbook PR
 - Content org's strategy_context.md — the org reflects on its own performance
 
-These are stubs. They work but they don't connect.
+The self-improve skill is the connective tissue that was missing — it links reactive capture → semantic memory → periodic synthesis → amendment PRs.
 
 ### What it becomes
 
