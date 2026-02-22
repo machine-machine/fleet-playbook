@@ -1,6 +1,7 @@
-# Machine.Machine OS — Architecture Spec v1.2
+# Machine.Machine OS — Architecture Spec v1.3
 *Self-audit based on m2 (reference instance) + fleet analysis — 2026-02-21*
 *Updated 2026-02-21: Added §3.11 m2o-autoheal self-healing gateway monitor*
+*Updated 2026-02-22: Added §7 The Rhythm — Human-in-the-Loop Operating Model*
 *Lives in: machine-machine/fleet-playbook @ sections/architecture.md*
 
 ---
@@ -590,7 +591,264 @@ Fleet control panel accessible as inline Telegram web app. Same Streamlit UI, em
 
 ---
 
-*Spec v1.1 — 2026-02-21. Owner: m2. Do not edit the copy in docs/ directly — edit fleet-playbook sections/architecture.md and sync.*
+## 6. Open Questions
+
+~~1. **Coolify host SSH** — resolved: named volumes replace bind mounts~~
+2. **Telegram tokens** — miauczek, pittbull, peter still need bots via @BotFather
+3. **Skill repos** — planka-pm, playbook, xfce-desktop — public or private?
+4. **`GUACD_HOSTNAME`** — guacd should run in its own sidecar, not in any agent container
+5. ~~**Fleet control** — resolved: Streamlit, deployed at fleet.machinemachine.ai~~
+
+---
+
+## 7. The Rhythm — Human-in-the-Loop Operating Model
+
+*Added 2026-02-22*
+
+### 7.1 Principle
+
+> Agents run continuously. Humans touch only decisions that are genuinely theirs to make.
+
+The fleet is not a set of reactive chatbots waiting to be told what to do. Each agent has a role, a rhythm, and an autonomy radius. It acts within that radius without asking. It surfaces decisions — never raw problems.
+
+---
+
+### 7.2 Autonomy Radius
+
+Every agent operates within three concentric circles of authority:
+
+```
+        ┌─────────────────────────────────────┐
+        │  🔴 Master-only  (~weekly)          │  spend money, external comms,
+        │                                     │  major product / fleet decisions
+        │  ┌─────────────────────────────┐    │
+        │  │  🟡 m2-approve  (occasional)│    │  deploy to prod, send to users,
+        │  │                             │    │  merge PRs, spawn agents, billing
+        │  │  ┌───────────────────────┐  │    │
+        │  │  │  🟢 Autonomous        │  │    │  research, write, read, remember,
+        │  │  │  (continuous)         │  │    │  run checks, analyze, fix config,
+        │  │  │                       │  │    │  update Planka, send memory briefs
+        │  │  └───────────────────────┘  │    │
+        │  └─────────────────────────────┘    │
+        └─────────────────────────────────────┘
+```
+
+**Default autonomy by action type:**
+
+| Action | Who decides |
+|---|---|
+| Read files, search web, analyze, summarize | 🟢 Agent |
+| Write to memory, update Planka card, send internal message | 🟢 Agent |
+| Run code in sandbox, fix config, restart process | 🟢 Agent |
+| Send message to a user's Telegram | 🟡 m2 (routing approval) |
+| Deploy to production, merge PR, run migration | 🟡 m2 → master brief |
+| Spend credits, send public comms, create external accounts | 🔴 Master |
+| Spawn or destroy an agent | 🔴 Master (until billing auto-approve ships) |
+
+Each agent has `AUTONOMY_RADIUS` defined in their `IDENTITY.md`. Anything outside their radius → escalate up (not block and wait).
+
+---
+
+### 7.3 The Brief Loop
+
+The daily human interface. Master reads one message. Makes a small number of decisions. Everything else flows.
+
+**Daily cadence (m2 sends at 07:00 UTC):**
+
+```
+☀️ Morning Brief — {DATE}
+
+NEEDS YOU ({n}):
+  [✅ Approve] [❌ Skip]  Deploy machinemachine-api v2.1
+  [✅ Approve] [❌ Pass]  maya spawn — hi@company.io (researcher, score 85)
+
+HAPPENING:
+  peter → TopoDIM blog post 3
+  miauczek → processing pitch leads
+  m2 → weekly memory consolidation
+
+SHIPPED YESTERDAY:
+  • destroy command (spawn-machine.sh)
+  • fleet compliance dashboard live
+
+BLOCKED:
+  • peter gateway offline → needs ANTHROPIC_API_KEY in Coolify [30s fix]
+
+Fleet: m2 🟢 | peter 🔴 | miauczek 🔴 | pittbull 🔴
+```
+
+**Rules:**
+- One message per day. Not one per event.
+- All decisions have inline buttons. No manual reply required.
+- "Blocked" items always include the exact fix, not just the symptom.
+- If nothing needs master: brief is skipped. Silence = all clear.
+
+---
+
+### 7.4 Planka Pull Protocol
+
+**The fleet is self-scheduling.** Master's job: keep Planka reflecting priorities. Agents' job: pull and execute.
+
+```
+HEARTBEAT cycle for each agent:
+
+1. Check "Now" list → do I have an assigned card?
+   YES → continue working it, update comment with progress
+   NO  → go to step 2
+
+2. Check "Next 2 Weeks" → top unassigned card matching my preset label
+   FOUND  → assign to self, move to Now, begin work
+   EMPTY  → flag to m2 ("Now list empty, no matching cards in Next 2 Weeks")
+
+3. Work the card
+   → Autonomous actions: just do them
+   → Actions outside radius: escalate first, then do after approval
+
+4. On completion:
+   → Move card to Done
+   → Add 3-line summary comment: what was done / what changed / what's next
+   → Pull next card
+
+5. If stuck >1h with no progress:
+   → Write comment: what I tried, what I need
+   → Move card to Blocked
+   → Escalate to m2
+```
+
+**Label convention:**
+
+| Label | Assigned to |
+|---|---|
+| `orchestrator` | m2 |
+| `researcher` | researcher-preset agents |
+| `builder` | builder-preset agents |
+| `creator` | creator-preset agents |
+| `generalist` | any agent |
+| `master-only` | never auto-assigned — surfaces in brief |
+
+---
+
+### 7.5 The Stuck Protocol
+
+No agent waits passively when blocked. The chain:
+
+```
+Agent hits blocker
+  ↓ try 2 alternatives (document what you tried)
+  ↓ if still stuck after 1h:
+
+Agent → m2 escalation:
+  {
+    "doing": "deploying machinemachine-api v2.1",
+    "tried": ["curl deploy endpoint", "checked Coolify logs — 422 on fqdn field"],
+    "need": "someone with Coolify API access to set fqdn manually"
+  }
+
+m2 has 4h to resolve:
+  → if m2 can fix it autonomously: fixes it, notifies agent
+  → if not: surfaces in next morning brief with proposed solution
+
+Master gets one inline button:
+  [✅ Approve proposed fix] [❌ Skip] [🔄 Modify]
+  (tap takes <30 seconds)
+
+Master decision → m2 routes back → agent continues
+```
+
+**What master never sees:** raw errors, full stack traces, "I don't know what to do." Every escalation arrives pre-digested with a proposed path forward.
+
+---
+
+### 7.6 Proactive Behaviors by Role
+
+**m2 (orchestrator):**
+
+| Cadence | Behavior |
+|---|---|
+| Daily 07:00 UTC | Morning brief to master |
+| Every heartbeat | Planka pull + fleet health check |
+| Every heartbeat | Spawn queue watch (execute pending spawns) |
+| Weekly (Friday) | Priority suggestion: "Here's what I think we should focus on next week" |
+| On-demand | Escalation routing (agent → master pre-digested) |
+
+**Specialist agents (peter / fleet agents):**
+
+| Cadence | Behavior |
+|---|---|
+| Every heartbeat | Planka pull → work active card |
+| On completion | Card → Done, summary comment, pull next |
+| On stuck (>1h) | Escalate to m2 with context |
+| Weekly | Progress report to m2 on assigned cards |
+
+**Client agents (user-facing, spawned via onboarding):**
+
+| Cadence | Behavior |
+|---|---|
+| Daily at user's 9am (from USER.md timezone) | Proactive check-in: 3 concrete suggestions based on recent context |
+| On new relevant information found | "Found something you should see — want a brief?" |
+| End of productive session | Write session summary to `memory/YYYY-MM-DD.md` |
+| Weekly | "Here's what we got done this week. What's the priority next?" |
+
+**Client agent daily check-in format:**
+
+```
+Good morning 👋
+
+Here's what I'm thinking for today:
+1. You mentioned [X] — want to pick up where we left off?
+2. I found [Y relevant to their work] — should I brief you?
+3. [optional: calendar-aware] You have [event] at [time] — want a prep brief?
+
+Or just tell me what's on your mind.
+```
+
+The user never has to think of what to ask. The agent manages the relationship.
+
+---
+
+### 7.7 Client Onboarding — Qualify-First Flow
+
+*Replaces the manual approval gate (removed 2026-02-22)*
+
+```
+                    ┌─ QUALIFY (score ≥ 70) ──→ Mini App → auto-spawn → 🟢 live
+email → bot ───────┤
+                    └─ CONTACT TRACK (score < 70) → CRM → nurture → optional master push
+```
+
+**Qualification scoring (automated, no human in the loop):**
+
+| Signal | Points |
+|---|---|
+| Company email domain (not gmail/yahoo/hotmail) | +30 |
+| Specific use case selected (not "general") | +20 |
+| Team size: solo +0, small team +20, company +40 | up to +40 |
+| Referred (has referral code) | +25 |
+| Base | 50 |
+
+**Thresholds:**
+- Score ≥ 70 → `qualified` → Mini App link sent immediately → auto-spawn on completion
+- Score < 70 → `contact_track` → nurture email sequence + CRM tag + weekly review digest
+
+**New OnboardState values:**
+```typescript
+'qualifying'    // bot is running qualification conversation
+'qualified'     // auto-spawn path — no master approval needed
+'contact_track' // nurture path — master can push anytime via /qualify {email}
+'waitlisted'    // capacity cap reached (future)
+```
+
+**Master's role in onboarding:** Weekly digest of contact_track leads. One tap to push any lead to qualified. No real-time approval bottleneck.
+
+---
+
+### 7.8 The One-Liner
+
+> **The agents run the work. Master sets the priorities. Humans only touch decisions that are genuinely theirs to make.**
+
+---
+
+*Spec v1.3 — 2026-02-22. Owner: m2. Do not edit the copy in docs/ directly — edit fleet-playbook sections/architecture.md and sync.*
 
 ## 4c. Spawn Approval Control — ADR
 
