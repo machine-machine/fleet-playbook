@@ -512,13 +512,21 @@ self-improve.sh review   # → docs/AMENDMENT_DRAFT.md
 self-improve.sh fleet-review
 ```
 
-**Dual storage:**
-- `memory/learnings.md` — markdown audit trail, always grep-able
-- Qdrant vector store (via m2-memory) — semantic recall, cross-session, cross-agent SYNTHESIS routing
+**Memory stack (two systems, complementary):**
+- `m2-memory` (Qdrant + BGE-M3) — retrieval-focused: STANDARD → DEEP → SYNTHESIS routing
+- `rlm-memory` (Cerebras RLM) — open-ended reasoning: "what are we systematically missing?"
+- m2-memory: `learn`, `recall`, `review`, `fleet-review`
+- RLM: `fleet-review` only (depth 3, iterative multi-hop)
+
+**Retro observation parking** (any agent, any time — no threshold):
+```bash
+self-improve.sh observe "pattern we keep hitting" --infra|--tooling|--workflow|--comms
+```
+Accumulates in `memory/fleet-retro.md` + Qdrant (entity: `retro`). Monthly `fleet-review` synthesises all via RLM.
 
 **Risk gating:**
-- Low-risk amendments (wording, script fixes) → apply directly + commit
-- High-risk (new capabilities, behavior changes) → PR + master approval
+- Low-risk (wording, script fixes) → apply directly + commit
+- High-risk (behavior changes, new capabilities) → PR + Telegram inline button for master approval
 
 Skill repo: `machine-machine/openclaw-self-improve-skill`
 
