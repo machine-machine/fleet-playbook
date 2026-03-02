@@ -760,3 +760,59 @@ P7: Orchestrator codes nothing (you own features.json, coding agent gets scoped 
 
 **Rule:** Anthropic models → Claude Code OAuth when available (Max plan = no API cost). OpenRouter only for non-Anthropic or when Claude Code auth is unavailable.
 
+
+---
+
+## 16. Video Calls (vc-call)
+
+> Added 2026-03-02. Every fleet agent can join Google Meet calls with full context.
+
+### One Command
+
+```bash
+vc-call <meet-link> [agent] [--topic "..."] [--participants "Name1, Name2"]
+```
+
+### What Happens
+
+1. **Pre-call research** — searches CRM + memory for participant context
+2. **Launches Joinly container** — headless Chrome, virtual mic/speaker, TTS voice
+3. **Agent joins call** with: MEMORY.md context, personality, topic briefing, MCP tools (memory search, CRM lookup)
+4. **Vision watcher** — sees screen shares, slides, documents shared by participants
+5. **Screen sharing** — agent can share charts (Chart.js) and diagrams (Mermaid) generated on-the-fly
+6. **Post-call ingest** — transcript + summary auto-saved to memory on call end
+
+### Agent Voices
+
+| Agent | Voice |
+|-------|-------|
+| m2 | am_echo |
+| alfred | am_onyx |
+| peter | bm_george |
+| gunnar | bm_daniel |
+| agentx | am_adam |
+| miauczek | af_nova |
+
+### Call Behaviour
+
+- **Group calls (mpc)**: raise hand before speaking unless directly asked
+- **1-on-1 (dyadic)**: respond freely
+- Keep turns under 30 words — punchy and clear
+- Never say "As an AI". Never apologize for being an AI.
+- Confirmations: just "Done." or "On it." — never restate the request
+
+### Infrastructure
+
+- Image: `joinly-fork:m2o` (custom Joinly with MCP, vision, screen share, Kokoro TTS)
+- STT: Speaches (faster-whisper-large-v3)
+- TTS: Kokoro FastAPI (fleet GPU service)
+- LLM: Gemini Flash (primary) + Cerebras (fallback)
+- MCP servers: memory + CRM (connected at launch)
+
+### Monitoring
+
+```bash
+docker logs -f joinly-<agent>-call  # live transcript
+joinly snapshot                      # screenshot current state
+docker stop joinly-<agent>-call     # leave call
+```
