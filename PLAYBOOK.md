@@ -1,5 +1,5 @@
 # Machine.Machine Fleet Playbook
-> Version: 0.2.0 — Living document. Propose amendments via PR to machine-machine/fleet-playbook.
+> Version: 0.3.0 — Living document. Propose amendments via PR to machine-machine/fleet-playbook.
 
 ---
 
@@ -664,3 +664,99 @@ Quick reference:
 ---
 
 *Last updated: 2026-02-21 | Maintainer: m2 | Propose changes: machine-machine/fleet-playbook*
+
+---
+
+## 14. Production Build Harness (Dark Factory)
+
+> Added 2026-03-02. The harness-engine closes the gap between spec and shipped product.
+
+Every fleet agent now arrives with a two-mode harness:
+
+### Two Modes
+
+**Conversational (default):** How agents work today. Light memory, loop awareness, passive trace logging. No friction.
+
+**Production (activated per-workspace):** Structural build discipline. Activated by `.harness-active` flag in a project workspace. Created automatically by `spec-discovery.sh build` or by the agent on request.
+
+### The Pipeline
+
+```
+gap-detector (daily cron)
+  → spec-discovery.sh start "<idea>"     # Research → Interview → PRD → Quality Gate
+  → spec-discovery.sh build <spec-id>    # PRD → harness init → features.json → .harness-active
+  → harness.sh next --project <name>     # Pick next feature
+  → harness.sh reflect <feature-id>      # Generate approaches, score, pick best
+  → [spawn coding agent with prompt]     # Orchestrator codes nothing
+  → harness.sh complete <feature-id>     # Verify + gate — ONLY way to mark done
+  → (repeat until all features pass)
+  → coolify-deploy.sh                    # Deploy
+```
+
+### Core Principle: Structure Over Instructions
+
+Instructions compliance: 48%. Structural enforcement: 93%.  
+`harness.sh complete` is the ONLY path to "done". No bypass. Verification must pass.
+
+### Commands (all agents have these via bundled skill)
+
+```bash
+export OPENROUTER_API_KEY=$(cat ~/.config/openrouter/config | cut -d= -f2-)
+
+harness.sh init --from-spec ~/specs/<id>/PRD.md --project <name>
+harness.sh status --project <name>
+harness.sh next --project <name>
+harness.sh reflect <feature-id> --project <name>
+harness.sh complete <feature-id> --project <name>   # ONLY done path
+harness.sh deactivate --project <name>
+```
+
+### Verification Tiers
+
+| Complexity | Tier | What runs |
+|-----------|------|-----------|
+| simple | light | init.sh smoke test |
+| medium | standard | test_command + exit code |
+| complex | full | test_command + LLM-as-judge semantic check |
+
+### Model Routing Policy
+
+- **Anthropic models** → Claude Code (Max plan, free). Use for coding agent spawns.
+- **Non-Anthropic** → OpenRouter. Default: `google/gemini-3-flash-preview` for harness utility calls (extraction, validation, reflection, semantic verification).
+
+### Trace System (Phase B)
+
+Every harness action emits JSONL traces. Ingested to `agent_traces` Qdrant collection every 4h.  
+Weekly cron (Monday 08:00 UTC) runs double-loop analysis:
+- **SINGLE_LOOP**: output problem → fix the feature
+- **DOUBLE_LOOP**: recurring pattern → fix the harness protocol
+
+Double-loop findings feed into self-improve amendments.
+
+### Design Principles (from MM research)
+
+P1: Structure over instructions (PCAS)  
+P2: Process fidelity over model intelligence (DARE-bench)  
+P3: Double-loop learning (Argyris & Schön)  
+P4: Reflection-in-action (generate approaches, score, pick best before coding)  
+P5: Dynamic middleware intensity (tier by complexity)  
+P6: Semantic verification (LLM-as-judge for complex features)  
+P7: Orchestrator codes nothing (you own features.json, coding agent gets scoped prompts)
+
+---
+
+## 15. Model Selection Policy
+
+> Added 2026-03-02.
+
+| Use case | Model | Route |
+|----------|-------|-------|
+| Daily conversation | claude-sonnet-4-6 | Default (OpenClaw provider) |
+| Complex reasoning, architecture | claude-opus-4-6 | `/model opus` to activate |
+| Harness utility calls (extraction, reflection, verification) | google/gemini-3-flash-preview | OpenRouter |
+| Coding agent (Anthropic) | claude-sonnet-4-6 or opus | Claude Code (Max plan) |
+| Coding agent (non-Anthropic) | gemini-3-flash-preview | OpenRouter |
+| Cerebras (fast iteration) | zai-glm-4.7 | Cerebras API |
+
+**Rule:** Anthropic models → Claude Code OAuth when available (Max plan = no API cost). OpenRouter only for non-Anthropic or when Claude Code auth is unavailable.
+
