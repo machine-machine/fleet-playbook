@@ -640,6 +640,12 @@ Quick reference:
 
 **Prime directive:** m2 is untouched until Phase 7 (all agents stable first).
 
+**Forgejo → Coolify auto-deploy:**
+- `coolify-deploy.sh create <name> <repo> <branch> [port]` — creates Coolify app **and** wires the Forgejo webhook automatically. Always use this for new Forgejo-backed apps.
+- `bulk-wire-webhooks.sh` — idempotent script that scans all Coolify apps and wires missing webhooks for any `machine.machine/` Forgejo repos. Run after manual app creation or as a catch-all.
+- Both scripts live in: `m2-config/scripts/`
+- If you create a Coolify app manually (UI or API), run `coolify-deploy.sh wire-webhook <app-uuid> <repo-name>` to add the push webhook.
+
 > Full spec + migration plan: `sections/architecture.md`
 
 ---
@@ -690,7 +696,7 @@ gap-detector (daily cron)
   → [spawn coding agent with prompt]     # Orchestrator codes nothing
   → harness.sh complete <feature-id>     # Verify + gate — ONLY way to mark done
   → (repeat until all features pass)
-  → coolify-deploy.sh                    # Deploy
+  → coolify-deploy.sh                    # Deploy (auto-wires Forgejo webhook)
 ```
 
 ### Core Principle: Structure Over Instructions
