@@ -13,16 +13,41 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Notify fleet — trigger re-ingest via escalation inbox
+      # Store the updated playbook straight into the fleet memory system so agents
+      # can semantically recall it. memory.machinemachine.ai is the current store
+      # (agent.memory.system, BGE-M3 + Qdrant); namespace "m2" is fleet-wide.
+      - name: Re-ingest PLAYBOOK.md into fleet memory (namespace m2)
         run: |
-          curl -s -X POST "https://bge-proxy.machinemachine.ai/escalate" \
-            -H "Authorization: Bearer ${{ secrets.FLEET_TOKEN }}" \
+          CONTENT=$(cat PLAYBOOK.md)
+          python3 - "$CONTENT" "${{ github.sha }}" <<'PY'
+          import json, sys, urllib.request
+          content, sha = sys.argv[1], sys.argv[2]
+          # chunk to keep each memory reasonable
+          chunks = [content[i:i+4000] for i in range(0, len(content), 4000)]
+          for idx, ch in enumerate(chunks):
+              body = json.dumps({
+                  "content": ch,
+                  "agent_id": "m2",
+                  "memory_type": "semantic",
+                  "importance": 0.85,
+                  "metadata": {"source": "fleet-playbook/PLAYBOOK.md", "commit": sha, "chunk": idx},
+              }).encode()
+              req = urllib.request.Request(
+                  "https://memory.machinemachine.ai/memory/store", data=body,
+                  headers={"Content-Type": "application/json"})
+              try:
+                  urllib.request.urlopen(req, timeout=30)
+                  print(f"stored chunk {idx}")
+              except Exception as e:
+                  print(f"chunk {idx} failed: {e}")
+          PY
+
+      # Ping the playbook manager (m2o-operator) in Mattermost so it can review the
+      # change and propagate anything the memory ingest can't (skill files, RUNCARD).
+      - name: Notify @m2o-operator (playbook manager) via Mattermost
+        if: ${{ secrets.MATTERMOST_WEBHOOK != '' }}
+        run: |
+          curl -s -X POST "${{ secrets.MATTERMOST_WEBHOOK }}" \
             -H "Content-Type: application/json" \
-            -d '{
-              "from_agent": "github-actions",
-              "to_agent": "m2",
-              "priority": "normal",
-              "question": "Playbook updated on main branch. Please re-ingest PLAYBOOK.md into Qdrant fleet memory namespace. Run: python3 ~/.openclaw/skills/m2-memory/scripts/ingest_sessions.py -v --source /home/developer/.openclaw/workspace/projects/fleet-playbook/PLAYBOOK.md",
-              "context": "Triggered by push to machine-machine/fleet-playbook main. Commit: ${{ github.sha }}. Changed files: PLAYBOOK.md"
-            }'
-          echo "Escalation sent to m2 for re-ingest"
+            -d "{\"text\": \":books: fleet-playbook updated on main (commit ${{ github.sha }}). @m2o-operator please review + re-ingest. Changed: PLAYBOOK.md / sections/**\"}"
+          echo "Mattermost notified"

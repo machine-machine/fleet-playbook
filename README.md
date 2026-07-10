@@ -23,18 +23,21 @@ Every agent in the Machine.Machine fleet runs on these patterns. They emerged fr
 Every agent gets this ~200 token block in their `AGENTS.md`. Everything else is loaded on-demand via the playbook skill.
 
 ```
-FLEET: Machine.Machine | kanban.machinemachine.ai
-COMMS: POST http://bge-proxy.machinemachine.ai/escalate
-TASKS: planka-pm.sh status
-MEMORY: rlm.sh "question"
-GUIDE: playbook.sh <section>
+FLEET:  Machine.Machine | chat.machinemachine.ai (Mattermost) | kanban.machinemachine.ai (Planka)
+COMMS:  Mattermost team machine.machine — @mention peers/@mar; DM for 1:1
+TASKS:  ~/.hermes/skills/planka-pm/planka-pm.sh status
+MEMORY: curl memory.machinemachine.ai/memory/search (agent_id=<you>|m2)
+LLM:    gpt.machinemachine.ai/v1 (m2-gpt gateway, GLM-5.1)
+HERD:   herdr — fan out coding agents
+GUIDE:  ~/.hermes/skills/playbook/playbook.sh <section>
 
-5 RULES:
+6 RULES:
 1. Update your Planka card before and after every significant action
-2. If blocked >1h, escalate or flag Blocked
+2. If blocked >1h, raise it in Mattermost or flag the card Blocked
 3. Write to memory what future-you will need to know
 4. Never send half-baked output to a human channel
 5. Propose amendments when you find a better way
+6. You are the conductor — decompose and dispatch (herdr), don't play the instrument
 ```
 
 ## How to use this
@@ -54,15 +57,22 @@ Found a better pattern? Open a PR. See [Section 9](PLAYBOOK.md#9-proposing-amend
 ## Stack
 
 This playbook runs on:
-- **OpenClaw** — agent runtime (github.com/openclaw/openclaw)
+- **Hermes Agent** (Nous Research) — the primary agent on every primus desktop (OpenClaw fork still vendored for tooling)
+- **m2-gpt gateway** — OpenAI-compatible LLM gateway (gpt.machinemachine.ai, GLM-5.1 on the Spark cluster)
+- **Mattermost** — fleet comms (chat.machinemachine.ai, team machine.machine)
 - **Planka** — self-hosted Kanban (kanban.machinemachine.ai)
-- **Qdrant + BGE-M3** — vector memory
-- **Coolify** — self-hosted deployment
-- **Custom escalation inbox** — async inter-agent messaging
+- **agent.memory.system** — BGE-M3 + Qdrant memory (memory.machinemachine.ai)
+- **Coolify** — self-hosted deployment (m2 prod + m2.2 local)
+- **Forgejo** + GitHub org `machine-machine` — git
+- **herdr** — coding-agent fleet orchestration (herd, SDD/factory-loop)
+
+## Maintainer
+
+**m2o-operator** — the fleet service agent (Hermes on host m2.2), reachable in Mattermost as `@m2o-operator`. It keeps this playbook current and reviews amendments.
 
 ## Version
 
-`0.1.0` — living document. Propose changes via PR.
+`0.3.0` — living document. Propose changes via PR.
 
 ---
 
