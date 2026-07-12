@@ -1,16 +1,17 @@
-# Machine.Machine OS — Architecture Spec v1.3
+# Machine.Machine OS — Architecture Spec v1.4
 *Self-audit based on m2 (reference instance) + fleet analysis — 2026-02-21*
 *Updated 2026-02-21: Added §3.11 m2o-autoheal self-healing gateway monitor*
 *Updated 2026-02-22: Added §7 The Rhythm — Human-in-the-Loop Operating Model*
+*Updated 2026-07-12: Truth pass — Hermes runtime, Mattermost comms, Guacamole on m2, m2-gpt gateway, memory.machinemachine.ai, herdr, primus*
 *Lives in: machine-machine/fleet-playbook @ sections/architecture.md*
 
 ---
 
 ## ⚠️ Prime Directive: Don't Touch m2
 
-m2 is the reference machine. Months of accumulated work, skills, memory, crons, custom OpenClaw fork, TTS pipeline — all running. **Do not redeploy, restructure, or migrate m2** until every agent is on the new architecture and proven stable. m2 is the safety net.
+m2 is the reference machine. Months of accumulated work, skills, memory, crons, custom Hermes runtime, TTS pipeline — all running. **Do not redeploy, restructure, or migrate m2** until every agent is on the new architecture and proven stable. m2 is the safety net.
 
-All architecture work targets the `base` branch for new/other agents only.
+All architecture work targets the `base`/`primus` image for new/other agents only.
 
 ---
 
@@ -34,26 +35,28 @@ entrypoint.sh on EVERY boot:
 ### Why agents lost data
 
 The same `entrypoint.sh` defaults to `M2_HOME=/m2_home`.  
-Agents set `CLAWDBOT_HOME=/clawdbot_home` but NOT `M2_HOME`.  
-Volume was mounted at `/clawdbot_home` — entrypoint symlinked `/home` to `/m2_home/home` (a path inside the ephemeral layer).  
+Agents set `HERMES_HOME=/hermes_home` but NOT `M2_HOME`.  
+Volume was mounted at `/hermes_home` — entrypoint symlinked `/home` to `/m2_home/home` (a path inside the ephemeral layer).  
 **Every restart = cold start.** One missing env var.
 
 **Fix:** `M2_HOME=/agent_home` + volume mounted at `/agent_home`.
 
-### Guacamole server — the actual topology
+### Guacamole — the actual topology
+
+Guacamole is **not** a standalone external host anymore. It runs **on m2** and is reachable at `m2o.machinemachine.ai`, serving **RDP-default** desktops for the fleet.
 
 ```
-Coolify deployments:
-  clawdbot-desktop:guacamole  ← OLD deployment
-  ├── clawdbot-desktop-worker  (exited — irrelevant)
+On m2 (Coolify):
+  m2o-guacamole
   ├── guacamole-db             ✅ RUNNING — MariaDB on coolify network
-  └── guacamole-full           ✅ RUNNING — Central Guacamole for fleet
+  └── guacamole                ✅ RUNNING — reachable at m2o.machinemachine.ai
+                                  serves RDP connections to each agent desktop
 
   m2-desktop:main
-  └── m2-desktop-worker        ✅ m2's desktop, connects to guacamole-full above
+  └── m2-desktop-worker        ✅ m2's own desktop, registered as a Guacamole connection
 ```
 
-The Guacamole server has been surviving on the corpse of the old guacamole branch deployment. It needs its own permanent home.
+Each agent's desktop is registered as a Guacamole RDP connection; operators open `m2o.machinemachine.ai` and pick the agent.
 
 ---
 
@@ -65,9 +68,9 @@ The Guacamole server has been surviving on the corpse of the old guacamole branc
 | 3 skill repos dirty (planka, spawn-machine, x-monitor) | 🟡 MED |
 | Skills can't be auto-updated (no git pull) | 🔴 HIGH |
 | `/workspace` volume misaligned (real workspace is in m2_home) | 🟡 LOW |
-| openclaw.json not git-backed | 🟡 MED (secrets — env vars are source of truth) |
+| hermes.json not git-backed | 🟡 MED (secrets — env vars are source of truth) |
 
-These will be resolved for new agents via the `base` branch. m2 will be migrated last.
+These will be resolved for new agents via the `primus` image. m2 will be migrated last.
 
 ---
 
@@ -77,23 +80,25 @@ These will be resolved for new agents via the `base` branch. m2 will be migrated
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│  FLEET CONTROL   fleet.machinemachine.ai  (Streamlit)   │
+│  ORCHESTRATION   herdr / m2herd  (panes + worktrees)     │
 ├──────────────────────────────────────────────────────────┤
-│  GUACAMOLE       g2.machinemachine.ai    (standalone)   │
+│  DESKTOPS        m2o.machinemachine.ai  (Guacamole/RDP)  │
 ├──────────────────────────────────────────────────────────┤
-│  IDENTITY        env vars only (AGENT_NAME, keys)       │
+│  LLM GATEWAY     gpt.machinemachine.ai  (m2-gpt/Bifrost) │
 ├──────────────────────────────────────────────────────────┤
-│  RUNTIME         Claude CLI + OpenClaw m2-custom fork   │
+│  IDENTITY        env vars only (AGENT_NAME, keys)        │
 ├──────────────────────────────────────────────────────────┤
-│  SKILL LAYER     all skills = git repos, pull on start  │
+│  RUNTIME         Claude CLI + Hermes agent runtime       │
 ├──────────────────────────────────────────────────────────┤
-│  CONFIG LAYER    written from env vars on cold boot     │
+│  SKILL LAYER     all skills = git repos, pull on start   │
 ├──────────────────────────────────────────────────────────┤
-│  PERSISTENCE     /opt/m2o/{name}/home → /agent_home     │
+│  CONFIG LAYER    written from env vars on cold boot      │
+├──────────────────────────────────────────────────────────┤
+│  PERSISTENCE     /opt/m2o/{name}/home → /agent_home      │
 │                  bind mount on Coolify host              │
 ├──────────────────────────────────────────────────────────┤
-│  BASE IMAGE      machine-machine/m2-desktop:base        │
-│                  one branch, all agents same image      │
+│  BASE IMAGE      machine-machine/primus:latest           │
+│                  one image, all agents same base         │
 └──────────────────────────────────────────────────────────┘
 ```
 
@@ -146,12 +151,14 @@ AGENT_NAME: peter              # drives paths, aliases, memory namespace
 ANTHROPIC_API_KEY: sk-ant-...  # Claude access
 AGENT_TELEGRAM_BOT_TOKEN: ...  # Telegram channel
 
-# Memory
+# Memory (memory.machinemachine.ai)
 COLLECTION_NAME: agent_memory_${AGENT_NAME}
 QDRANT_URL: http://memory-qdrant:6333
 
-# Comms (set via Coolify shared env group)
-BGE_PROXY_TOKEN: ...
+# Comms + services (set via Coolify shared env group)
+MATTERMOST_URL: https://chat.machinemachine.ai
+MATTERMOST_TOKEN: ...          # agent's Mattermost bot token
+M2_GPT_URL: https://gpt.machinemachine.ai   # m2-gpt gateway (GLM via Bifrost)
 PLANKA_URL: https://kanban.machinemachine.ai
 PLANKA_TOKEN: ...
 COOLIFY_TOKEN: ...
@@ -160,12 +167,12 @@ COOLIFY_TOKEN: ...
 AGENT_TTS_BASE_URL: http://speech_gateway/v1
 AGENT_STT_BASE_URL: http://speaches-.../v1
 
-# OpenClaw fork
-AGENT_OPENCLAW_REPO: https://github.com/machine-machine/openclaw.git
-AGENT_OPENCLAW_BRANCH: m2-custom
+# Hermes runtime
+AGENT_HERMES_REPO: https://github.com/machine-machine/hermes.git
+AGENT_HERMES_BRANCH: main
 
 # Skills to install on cold boot (all agents, non-negotiable defaults)
-AGENT_SKILLS: m2-memory,rlm-memory,bmad-elicit,planka,planka-pm,playbook,xfce-desktop,stt
+AGENT_SKILLS: m2-memory,rlm-memory,bmad-elicit,planka,planka-pm,playbook,herdr,xfce-desktop,stt
 ```
 
 ---
@@ -175,21 +182,21 @@ AGENT_SKILLS: m2-memory,rlm-memory,bmad-elicit,planka,planka-pm,playbook,xfce-de
 **"Minutes onboarding" requires pre-baking slow steps into the image — not running them at container start.**
 
 ```
-Tier 1: base image  (machine-machine/m2-desktop:base)
-  Ubuntu + XFCE + VNC + guacd + system deps
+Tier 1: base image  (machine-machine/primus:base)
+  Ubuntu + XFCE + RDP/VNC + guacd + system deps
   Claude CLI (curl install at build time)
   Rebuilt: rarely (major system changes only)
 
-Tier 2: agent image  (machine-machine/m2-desktop:agent-latest)
+Tier 2: agent image  (machine-machine/primus:latest)
   FROM base
-  + OpenClaw:m2-custom cloned + npm ci (done at build time)
+  + Hermes runtime cloned + npm ci (done at build time)
   + All skill repos pre-cloned
   Rebuilt: weekly via GitHub Actions CI
 ```
 
-All agents pull `agent-latest`. Cold boot = `git pull` (seconds) not `git clone + npm ci` (15 min).
+All agents pull `primus:latest`. Cold boot = `git pull` (seconds) not `git clone + npm ci` (15 min).
 
-**Staged base always warm in Coolify:** A permanent `base-staging` app keeps image layers cached. Real agent deploys pull from cache — not a fresh build.
+**Staged base always warm in Coolify:** A permanent `primus-staging` app keeps image layers cached. Real agent deploys pull from cache — not a fresh build.
 
 **Claude CLI pre-installed at image build time:**
 ```dockerfile
@@ -205,40 +212,40 @@ claude update --skip-permissions 2>/dev/null &
 
 ### 3.4 Bootstrap Layer
 
-**Critical path principle:** The only thing on the blocking path to "Telegram-reachable" is: config write → VNC start → gateway start. Everything else is background.
+**Critical path principle:** The only thing on the blocking path to "reachable" is: config write → RDP/VNC start → gateway start. Everything else is background.
 
 ```bash
-startup.sh
+provision.sh
 │
 ├── Phase 1 (ALWAYS): persistent home setup
 │     entrypoint symlink pattern (M2_HOME/home → /home)
 │
 ├── Phase 2: warm or cold?
-│     if ~/.openclaw/openclaw.json exists → WARM
+│     if ~/.hermes/hermes.json exists → WARM
 │     else → COLD
 │
 ├── WARM START (fast path, ~60s):
 │     claude update --skip-permissions &        ← background
 │     git pull --ff-only skills/* &             ← background, parallel
-│     git pull openclaw:m2-custom --ff-only &   ← background
-│     relink openclaw fork symlink
-│     start VNC + guacd + OpenClaw gateway      ← only blocking steps
+│     git pull hermes:main --ff-only &          ← background
+│     relink Hermes runtime symlink
+│     start RDP/VNC + guacd + Hermes gateway    ← only blocking steps
 │
 └── COLD START (new agent, target <5 min):
       # BLOCKING (sequential, critical path):
-      1.  validate_env_vars() — missing required → escalate to m2 + exit
-      2.  git pull --ff-only on pre-cloned OpenClaw (image has it already)
-      3.  ln -sfn ~/.openclaw/platform/openclaw /usr/lib/node_modules/openclaw
-      4.  generate-openclaw-config.js  (from env vars → openclaw.json)
-      5.  write_config_files()  (planka, coolify, bge-proxy, cerebras)
+      1.  validate_env_vars() — missing required → post to Mattermost @m2 + exit
+      2.  git pull --ff-only on pre-cloned Hermes (image has it already)
+      3.  ln -sfn ~/.hermes/platform/hermes /usr/lib/node_modules/hermes
+      4.  generate-hermes-config.js  (from env vars → hermes.json)
+      5.  write_config_files()  (planka, coolify, mattermost, m2-gpt, cerebras)
       6.  Write identity files (SOUL.md, AGENTS.md, USER.md from template)
-      7.  Start VNC + guacd + OpenClaw gateway
-      8.  Notify master: "⚡ {AGENT_NAME} is online. Guacamole: g2.machinemachine.ai
+      7.  Start RDP/VNC + guacd + Hermes gateway
+      8.  Notify master: "⚡ {AGENT_NAME} is online. Desktop: m2o.machinemachine.ai
                           Connection: {AGENT_NAME}. Seeding memories in background."
 
       # BACKGROUND (non-blocking, parallel after gateway starts):
       9.  git pull --ff-only skills/* &
-      10. ingest_bootstrap_memories.py &   ← doesn't block Telegram
+      10. ingest_bootstrap_memories.py &   ← doesn't block comms
       11. clone fleet-playbook if missing &
 ```
 
@@ -246,28 +253,28 @@ startup.sh
 
 ### 3.5 Skill Layer
 
-**Rule: every skill = a git repo under `machine-machine/openclaw-{skill}-skill`.**
+**Rule: every skill = a git repo under `machine-machine/hermes-{skill}-skill` (mirrored to Forgejo).**
 
 ```
 Status:
   ✅ ALL fleet skills now git-tracked (2026-02-21):
-     openclaw-m2-memory-skill, openclaw-rlm-memory-skill, openclaw-spawn-machine-skill
-     openclaw-bmad-elicit-skill, planka, x-monitor  (legacy naming)
+     hermes-m2-memory-skill, hermes-rlm-memory-skill, hermes-spawn-machine-skill
+     hermes-bmad-elicit-skill, planka, x-monitor  (legacy naming)
      m2o-skill-planka-pm, m2o-skill-playbook, m2o-skill-xfce-desktop
-     m2o-skill-stt, m2o-skill-coolify, m2o-skill-tts-manager
+     m2o-skill-stt, m2o-skill-coolify, m2o-skill-herdr, m2o-skill-tts-manager
      m2o-skill-x-scraper, m2o-skill-browser-persistence, m2o-skill-twenty
   🚫 m2-only (not fleet): homeassistant, video-ad-creator, kiedis-po, qwen-tts
 ```
 
 **Warm restart skill refresh:**
 ```bash
-for skill_dir in ~/.openclaw/skills/*/; do
+for skill_dir in ~/.hermes/skills/*/; do
   [ -d "$skill_dir/.git" ] && git -C "$skill_dir" pull --ff-only --quiet 2>/dev/null &
 done
 ```
 
 **m2 skill migration (don't touch now):**  
-On next m2 maintenance window: push each manual skill to its own GitHub repo, then convert to git clone. Until then, m2's skills are safe inside `m2_home` volume.
+On next m2 maintenance window: push each manual skill to its own GitHub/Forgejo repo, then convert to git clone. Until then, m2's skills are safe inside `m2_home` volume.
 
 ---
 
@@ -287,9 +294,15 @@ write_config_files() {
   printf "COOLIFY_API_URL=%s\nCOOLIFY_TOKEN=%s\n" "$COOLIFY_API_URL" "$COOLIFY_TOKEN" \
     > ~/.config/coolify/config
 
-  # BGE proxy
-  printf "BGE_URL=http://bge-proxy.machinemachine.ai\nBGE_TOKEN=%s\n" "$BGE_PROXY_TOKEN" \
-    > ~/.config/bge-proxy/config
+  # Mattermost (comms)
+  install -m 600 /dev/null ~/.config/mattermost/config
+  printf "MATTERMOST_URL=%s\nMATTERMOST_TOKEN=%s\n" "$MATTERMOST_URL" "$MATTERMOST_TOKEN" \
+    > ~/.config/mattermost/config
+
+  # m2-gpt gateway (GLM via Bifrost)
+  install -m 600 /dev/null ~/.config/m2-gpt/config
+  printf "M2_GPT_URL=%s\nM2_GPT_TOKEN=%s\n" "$M2_GPT_URL" "$M2_GPT_TOKEN" \
+    > ~/.config/m2-gpt/config
 
   # Cerebras
   install -m 600 /dev/null ~/.config/cerebras/config
@@ -305,7 +318,7 @@ write_config_files() {
 ```bash
 # Already on m2 as m2-daily-backup
 # Bootstrap sets up same cron on new agents
-cd ~/.openclaw/workspace && git add memory/ MEMORY.md && git commit -m "daily backup" && git push
+cd ~/.hermes/workspace && git add memory/ MEMORY.md && git commit -m "daily backup" && git push
 ```
 
 **Track B — host bind mount rsync (Coolify host level):**
@@ -318,11 +331,11 @@ rsync -a /opt/m2o/ /backup/m2o/ \
 
 ---
 
-### 3.8 Guacamole — Standalone Service
+### 3.8 Guacamole on m2 — RDP-Default Desktops
 
-**Repo:** `machine-machine/m2o-guacamole`  
-**URL:** `g2.machinemachine.ai`  
-**Principle:** The Guacamole server is fleet infrastructure, not tied to any agent.
+**Runs on:** m2 (Coolify app `m2o-guacamole`)  
+**URL:** `m2o.machinemachine.ai`  
+**Principle:** Guacamole is fleet infrastructure hosted on m2, not tied to any single agent. Desktops default to **RDP**.
 
 ```yaml
 # docker-compose.yml
@@ -343,16 +356,15 @@ services:
       test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
       interval: 10s; timeout: 5s; retries: 5; start_period: 30s
 
-  guacamole-full:
+  guacamole:
     image: guacamole/guacamole:1.5.5
-    container_name: guacamole-full
+    container_name: guacamole
     restart: unless-stopped
     depends_on:
       guacamole-db:
         condition: service_healthy
-    # NOTE: No depends_on desktop-worker — server is standalone
     environment:
-      GUACD_HOSTNAME: ${GUACD_HOSTNAME:-m2-desktop-worker}  # configurable
+      GUACD_HOSTNAME: ${GUACD_HOSTNAME:-guacd}
       GUACD_PORT: 4822
       MYSQL_HOSTNAME: guacamole-db
       MYSQL_DATABASE: guacamole_db
@@ -362,7 +374,7 @@ services:
       coolify:
         external: true
     labels:
-      - traefik.http.routers.guacamole-full.rule=Host(`g2.machinemachine.ai`)
+      - traefik.http.routers.guacamole.rule=Host(`m2o.machinemachine.ai`)
 
 volumes:
   guacamole_db:
@@ -371,61 +383,48 @@ networks:
     external: true
 ```
 
-**Each agent registers its VNC on cold boot** via `register-guacamole.sh`.  
-`GUACD_HOSTNAME` env var points to whichever agent is the primary guacd source (currently m2).
+**Each agent registers its desktop on cold boot** via `register-guacamole.sh` — RDP connection by default, VNC fallback.
 
 ---
 
-### 3.9 Fleet Control Streamlit
+### 3.9 Fleet Control
 
-**Repo:** `machine-machine/m2o-fleet`  
-**URL:** `fleet.machinemachine.ai`
+Fleet health, memory sizes, escalations, and Planka summaries are surfaced through Mattermost (`fleet-ops` channel + the morning brief) and the m2-gpt gateway dashboards. A dedicated Streamlit control panel is optional and no longer on the critical path — Mattermost is the human interface.
 
 ```
-Panel 1 — Fleet Status
-  Agent cards: name, Coolify status, last active, compliance %, Guacamole link
-
-Panel 2 — Memory
-  Qdrant collection sizes + last write per agent + cross-agent search
-
-Panel 3 — Escalations
-  Pending/resolved via BGE proxy API, reply from UI
-
-Panel 4 — Planka
-  Master Roadmap Now/Next/Done summary
-
-Panel 5 — Actions
-  Spawn agent form, restart agent, broadcast escalation, rolling update
-
-Panel 6 — Logs
-  Coolify deployment logs, 100 lines per agent
+Panel 1 — Fleet Status   → fleet-ops channel: name, Coolify status, last active, desktop link
+Panel 2 — Memory         → memory.machinemachine.ai: collection sizes + last write per agent
+Panel 3 — Escalations    → Mattermost escalations channel, reply in-thread
+Panel 4 — Planka         → Master Roadmap Now/Next/Done summary
+Panel 5 — Actions        → provision.sh spawn, restart agent, broadcast, rolling update
+Panel 6 — Logs           → Coolify deployment logs, 100 lines per agent
 ```
 
 ---
 
 ### 3.10 Spawn Flow — "Minutes Onboarding"
 
-**Goal:** Master provides 2 things (agent name + Telegram token). Everything else is automated.
+**Goal:** Master provides 2 things (agent name + Telegram token). Everything else is automated by `provision.sh`.
 
 ```bash
 # Single command:
-spawn-machine.sh <name> <telegram_bot_token>
+provision.sh <name> <telegram_bot_token>
 
 spawn_agent() {
   NAME=$1; TOKEN=$2
 
   # 1. Validate: check name not already in registry
-  grep -q "^  $NAME:" ~/.openclaw/workspace/platform/incubator/registry.yaml && exit 1
+  grep -q "^  $NAME:" ~/.hermes/workspace/platform/incubator/registry.yaml && exit 1
 
-  # 2. Pre-register Guacamole connection (no need to wait for agent to do it)
+  # 2. Pre-register Guacamole RDP connection on m2 (m2o.machinemachine.ai)
   register-guacamole.sh pre-register "$NAME" "${NAME}-desktop"
 
-  # 3. Create Coolify app from machine-machine/m2-desktop:agent-latest
+  # 3. Create Coolify app from machine-machine/primus:latest
   UUID=$(coolify.sh create-compose-app \
     --name "${NAME}-desktop" \
-    --repo machine-machine/m2-desktop \
-    --branch agent-latest \
-    --attach-env-group m2o-shared)   # ← gets Qdrant, BGE, TTS, Planka, Coolify creds
+    --repo machine-machine/primus \
+    --branch latest \
+    --attach-env-group m2o-shared)   # ← gets Qdrant, Mattermost, m2-gpt, TTS, Planka, Coolify creds
 
   # 4. Set the 2 agent-specific env vars (everything else from shared group)
   coolify.sh env-set $UUID AGENT_NAME "$NAME"
@@ -453,13 +452,13 @@ Telegram token: 7890123456:AAH...
 ```
 That's it. No SSH, no Guacamole UI, no env var hunting.
 
-**Timeline after `spawn-machine.sh peter <token>`:**
+**Timeline after `provision.sh peter <token>`:**
 ```
-T+0:00  spawn-machine.sh runs (Coolify app created + deploy triggered)
-T+0:30  Coolify pulls agent-latest image (cached layers — fast)
+T+0:00  provision.sh runs (Coolify app created + deploy triggered)
+T+0:30  Coolify pulls primus:latest image (cached layers — fast)
 T+1:00  Container starts, entrypoint runs (first boot: copy /home to volume)
-T+2:00  Configs written, OpenClaw gateway starts
-T+3:00  "⚡ peter is online" Telegram message to master
+T+2:00  Configs written, Hermes gateway starts
+T+3:00  "⚡ peter is online" Telegram message + Mattermost fleet-ops post
 T+5:00  Background: memories seeded, skills updated, fleet-playbook pulled
 ```
 
@@ -469,25 +468,25 @@ T+5:00  Background: memories seeded, skills updated, fleet-playbook pulled
 
 **Every agent container runs `m2o-autoheal` as a supervisord service (priority 35, runs before the gateway).**
 
-It wakes every 15 minutes, checks gateway config health, and self-repairs — no human intervention needed for the most common failure mode (invalid `openclaw.json`).
+It wakes every 15 minutes, checks gateway config health, and self-repairs — no human intervention needed for the most common failure mode (invalid `hermes.json`).
 
 **What it monitors:**
-- `openclaw.json` for invalid/rejected keys (e.g. stale `meta` block from config generator)
+- `hermes.json` for invalid/rejected keys (e.g. stale `meta` block from config generator)
 - Gateway process alive (via `pgrep`)
 - Crash-loop indicator (repeated `exit status 1` in gateway log)
 
 **Repair flow:**
 ```
 1. Detect broken config (python3 JSON parse + key check)
-2. Backup: ~/.openclaw/backups/openclaw.json.backup.YYYYMMDD-HHMMSS
-3. Repair: openclaw doctor --fix  (fallback: manual JSON strip)
+2. Backup: ~/.hermes/backups/hermes.json.backup.YYYYMMDD-HHMMSS
+3. Repair: hermes doctor --fix  (fallback: manual JSON strip)
 4. Log outcome to /var/log/m2o-autoheal.log
 5. Gateway auto-restarts via supervisord (autorestart=true)
 ```
 
 **Backup retention:** Last 20 dated backups kept, older ones pruned automatically.
 
-**Source:** `machine-machine/m2-desktop:base` → `scripts/m2o-autoheal.sh`  
+**Source:** `machine-machine/primus:base` → `scripts/m2o-autoheal.sh`  
 **Baked into image at:** `/usr/local/bin/m2o-autoheal.sh`  
 **Supervisord entry:**
 ```ini
@@ -495,7 +494,7 @@ It wakes every 15 minutes, checks gateway config health, and self-repairs — no
 command=/bin/bash /usr/local/bin/m2o-autoheal.sh
 user=root
 autorestart=true
-priority=35          # starts before clawdbot-gateway (priority=40)
+priority=35          # starts before hermes-gateway (priority=40)
 startsecs=5
 stdout_logfile=/var/log/m2o-autoheal.log
 stderr_logfile=/var/log/m2o-autoheal.log
@@ -512,12 +511,12 @@ stderr_logfile=/var/log/m2o-autoheal.log
 | Phase | What | Touches m2? | Est. |
 |-------|------|-------------|------|
 | 0 | Fix agents: add `M2_HOME=/agent_home` + volume at `/agent_home` | ❌ | 30 min |
-| 1 | Extract `m2o-guacamole` standalone repo + Coolify deploy | ❌ | ✅ Done |
-| 2 | `base` branch: Dockerfile + two-tier image + cold/warm bootstrap | ❌ | 2 days |
-| 3 | GitHub Actions CI: weekly rebuild of `agent-latest` image | ❌ | in phase 2 |
-| 4 | `spawn-machine.sh` single command (Coolify + registry + Guacamole) | ❌ | in phase 2 |
-| 5 | Push 11 missing skill repos to GitHub | m2 skills only | 3 days |
-| 6 | Fleet control Streamlit `m2o-fleet` | ❌ | 1 week |
+| 1 | Guacamole on m2 (`m2o-guacamole`) → m2o.machinemachine.ai | ❌ | ✅ Done |
+| 2 | `primus` image: Dockerfile + two-tier image + cold/warm bootstrap | ❌ | 2 days |
+| 3 | GitHub Actions CI: weekly rebuild of `primus:latest` image | ❌ | in phase 2 |
+| 4 | `provision.sh` single command (Coolify + registry + Guacamole) | ❌ | in phase 2 |
+| 5 | Push missing skill repos to GitHub/Forgejo | m2 skills only | 3 days |
+| 6 | Fleet surfacing via Mattermost + m2-gpt dashboards | ❌ | 1 week |
 | 7 | Host bind mounts `/opt/m2o/` (needs Coolify host SSH) | ❌ | coordinate |
 | 8 | Migrate m2 to new architecture | ✅ last | when stable |
 
@@ -544,7 +543,7 @@ Telegram Mini App:
         ↓
 Backend (machinemachine-api):
   CRM state: email_verified → token_validated → name_chosen → provisioning
-  Trigger: spawn-machine.sh {name} {token}  (or queue for review)
+  Trigger: provision.sh {name} {token}  (or queue for review)
         ↓
 Client receives:
   - Message on their new bot: "⚡ Your agent {name} is live. Say hello!"
@@ -565,16 +564,17 @@ email_pending → email_verified → token_validated → name_chosen
 - Weekly fleet health: `getMe` check per agent → token revocation detected early
 - Web fallback: `onboard.machinemachine.ai` for non-Mini-App Telegram clients
 
-**fleet.machinemachine.ai as Telegram Mini App:**
-Fleet control panel accessible as inline Telegram web app. Same Streamlit UI, embedded via Mini App protocol. Spawn, monitor, escalate — without leaving Telegram.
+**fleet control as Telegram Mini App:**
+Fleet control panel accessible as inline Telegram web app, mirroring the Mattermost fleet-ops view. Spawn, monitor, escalate — without leaving Telegram.
 
 ---
 
 ## 5. What NOT to Change
 
-- m2's `m2_home` volume, entrypoint, openclaw.json — **untouched until Phase 7**
-- BGE proxy escalation API — working
-- Qdrant + BGE-M3 memory stack — working
+- m2's `m2_home` volume, entrypoint, hermes.json — **untouched until Phase 7**
+- Mattermost comms (chat.machinemachine.ai) — working
+- memory.machinemachine.ai (BGE-M3 + Qdrant) memory stack — working
+- m2-gpt gateway (gpt.machinemachine.ai, GLM via Bifrost) — working
 - TTS/STT infrastructure — working
 - HEARTBEAT/cron pattern — working
 - Daily workspace git push — extend to agents, don't redesign
@@ -585,19 +585,9 @@ Fleet control panel accessible as inline Telegram web app. Same Streamlit UI, em
 
 1. **Coolify host SSH** — needed for `/opt/m2o/` bind mount setup (Phase 0/6)
 2. **Telegram tokens** — miauczek, pittbull, peter need bots via @BotFather
-3. **Skill repos** — planka-pm, playbook, xfce-desktop — public or private?
-4. **`GUACD_HOSTNAME`** — after extracting m2o-guacamole, should guacd run in m2's container or a dedicated container?
-5. **Fleet control** — build Streamlit ourselves or adapt an existing dashboard?
-
----
-
-## 6. Open Questions
-
-~~1. **Coolify host SSH** — resolved: named volumes replace bind mounts~~
-2. **Telegram tokens** — miauczek, pittbull, peter still need bots via @BotFather
-3. **Skill repos** — planka-pm, playbook, xfce-desktop — public or private?
-4. **`GUACD_HOSTNAME`** — guacd should run in its own sidecar, not in any agent container
-5. ~~**Fleet control** — resolved: Streamlit, deployed at fleet.machinemachine.ai~~
+3. **Skill repos** — planka-pm, playbook, xfce-desktop — public or private (GitHub + Forgejo mirror)?
+4. **`GUACD_HOSTNAME`** — one shared guacd sidecar on m2 vs per-desktop guacd?
+5. **Fleet control** — keep it in Mattermost + m2-gpt dashboards, or build a dedicated panel?
 
 ---
 
@@ -638,7 +628,7 @@ Every agent operates within three concentric circles of authority:
 | Action | Who decides |
 |---|---|
 | Read files, search web, analyze, summarize | 🟢 Agent |
-| Write to memory, update Planka card, send internal message | 🟢 Agent |
+| Write to memory, update Planka card, send Mattermost message | 🟢 Agent |
 | Run code in sandbox, fix config, restart process | 🟢 Agent |
 | Send message to a user's Telegram | 🟡 m2 (routing approval) |
 | Deploy to production, merge PR, run migration | 🟡 m2 → master brief |
@@ -668,7 +658,7 @@ HAPPENING:
   m2 → weekly memory consolidation
 
 SHIPPED YESTERDAY:
-  • destroy command (spawn-machine.sh)
+  • destroy command (provision.sh)
   • fleet compliance dashboard live
 
 BLOCKED:
@@ -698,7 +688,7 @@ HEARTBEAT cycle for each agent:
 
 2. Check "Next 2 Weeks" → top unassigned card matching my preset label
    FOUND  → assign to self, move to Now, begin work
-   EMPTY  → flag to m2 ("Now list empty, no matching cards in Next 2 Weeks")
+   EMPTY  → flag to m2 in Mattermost ("Now list empty, no matching cards in Next 2 Weeks")
 
 3. Work the card
    → Autonomous actions: just do them
@@ -712,7 +702,7 @@ HEARTBEAT cycle for each agent:
 5. If stuck >1h with no progress:
    → Write comment: what I tried, what I need
    → Move card to Blocked
-   → Escalate to m2
+   → Escalate to m2 (Mattermost)
 ```
 
 **Label convention:**
@@ -737,7 +727,7 @@ Agent hits blocker
   ↓ try 2 alternatives (document what you tried)
   ↓ if still stuck after 1h:
 
-Agent → m2 escalation:
+Agent → m2 (Mattermost escalations channel):
   {
     "doing": "deploying machinemachine-api v2.1",
     "tried": ["curl deploy endpoint", "checked Coolify logs — 422 on fqdn field"],
@@ -848,7 +838,7 @@ email → bot ───────┤
 
 ---
 
-*Spec v1.3 — 2026-02-22. Owner: m2. Do not edit the copy in docs/ directly — edit fleet-playbook sections/architecture.md and sync.*
+*Spec v1.4 — 2026-07-12. Owner: m2. Do not edit the copy in docs/ directly — edit fleet-playbook sections/architecture.md and sync.*
 
 ## 4c. Spawn Approval Control — ADR
 

@@ -1,5 +1,5 @@
 # Machine.Machine Fleet Playbook
-> Version: 0.2.0 — Living document. Propose amendments via PR to machine-machine/fleet-playbook.
+> Version: 0.3.0 — Living document. Propose amendments via PR to machine-machine/fleet-playbook.
 
 ---
 
@@ -9,7 +9,7 @@ The operating model for the Machine.Machine agent fleet. Every agent that joins 
 
 **Operator:** Mariusz (mar!0) — Telegram 437589940, CET  
 **Orchestrator:** m2 — manages infrastructure, onboarding, skill development  
-**Fleet URL:** kanban.machinemachine.ai (Planka), bge-proxy.machinemachine.ai (comms)
+**Fleet URLs:** kanban.machinemachine.ai (Planka), chat.machinemachine.ai (Mattermost, team `machine.machine`), gpt.machinemachine.ai (m2-gpt gateway), memory.machinemachine.ai (agent memory), m2o.machinemachine.ai (Guacamole)
 
 ---
 
@@ -17,15 +17,16 @@ The operating model for the Machine.Machine agent fleet. Every agent that joins 
 > This block is the only thing every agent needs in every session. ~200 tokens. Everything else is on-demand.
 
 ```
-FLEET: Machine.Machine | kanban.machinemachine.ai
-COMMS: POST http://bge-proxy.machinemachine.ai/escalate (Bearer 8zbGsCdilSVeHweIwHZzd1X46djd50crKP7bNYAuRjw)
-TASKS: ~/.openclaw/skills/planka-pm/planka-pm.sh status
-MEMORY: ~/.openclaw/skills/rlm-memory/rlm.sh "question"
-GUIDE: ~/.openclaw/skills/playbook/playbook.sh <section>
+FLEET:   Machine.Machine | kanban.machinemachine.ai
+COMMS:   Mattermost chat.machinemachine.ai (team machine.machine) — DM/channel other agents
+TASKS:   ~/.hermes/skills/planka-pm/planka-pm.sh status
+MEMORY:  ~/.hermes/skills/m2-memory/memory.sh search "question"   (memory.machinemachine.ai)
+GATEWAY: gpt.machinemachine.ai  (m2-gpt — GLM via Bifrost routes+chains)
+GUIDE:   ~/.hermes/skills/playbook/playbook.sh <section>
 
 6 RULES:
 1. Open or update a Planka card for any task that spans >3 exchanges. Single-exchange tasks don't need a card.
-2. If blocked >1h, escalate to m2 or flag card as Blocked
+2. If blocked >1h, escalate to m2 in Mattermost or flag the card as Blocked
 3. Write to memory at session breaks (compaction, goodbye, or every ~2h in long sessions) — not per-task.
 4. Never send half-baked output to a human channel
 5. Propose amendments to this playbook when you find a better way
@@ -62,21 +63,23 @@ An agent wakes up fresh every session. Memory files are the only continuity.
 | Working | Current session context | In-context, not persisted |
 | Daily | Raw session logs | `memory/YYYY-MM-DD.md` |
 | Long-term | Curated knowledge | `MEMORY.md` (main session only) |
-| Semantic | Vector search across everything | Qdrant via m2-memory skill |
+| Semantic | Vector search across everything | memory.machinemachine.ai (BGE-M3 + Qdrant) via m2-memory skill |
 
 **Commands:**
 ```bash
 # Store a memory
-~/.openclaw/skills/m2-memory/memory.sh store "What I learned about X"
+~/.hermes/skills/m2-memory/memory.sh store "What I learned about X"
 
-# Search (keyword)
-~/.openclaw/skills/m2-memory/memory.sh search "topic"
+# Search (hybrid: dense BGE-M3 + sparse)
+~/.hermes/skills/m2-memory/memory.sh search "topic"
 
 # Deep multi-hop search (use for complex questions)
-~/.openclaw/skills/rlm-memory/rlm.sh "What do we know about X after doing Y?"
+~/.hermes/skills/rlm-memory/rlm.sh "What do we know about X after doing Y?"
 ```
 
-**Namespace:** Each agent gets its own Qdrant namespace (`agent_memory_<name>`). Shared knowledge lives in `m2` namespace — agents can read it but should write to their own.
+**Service:** `memory.machinemachine.ai` — the M² agent memory system (BGE-M3 embeddings + Qdrant hybrid search, 3-tier memory, per-agent namespaces).
+
+**Namespace:** Each agent gets its own Qdrant namespace (`agent_memory_<name>`). Shared knowledge lives in the `m2` namespace — agents can read it but should write to their own.
 
 **Rule:** If you want to remember something, write it to a file. "Mental notes" don't survive session restarts. Files do.
 
@@ -90,8 +93,8 @@ All work lives on the board. If it's not on the board, it doesn't exist.
 
 **Board:** kanban.machinemachine.ai → Machine.Machine project  
 **Config:** `~/.config/planka/config`  
-**Skill:** `~/.openclaw/skills/planka/planka.sh`  
-**PM assistant:** `~/.openclaw/skills/planka-pm/planka-pm.sh`
+**Skill:** `~/.hermes/skills/planka/planka.sh`  
+**PM assistant:** `~/.hermes/skills/planka-pm/planka-pm.sh`
 
 **Board structure:**
 ```
@@ -101,7 +104,7 @@ Growth Engine          — LinkedIn, blog, content flywheel
 Research & Benchmarking— papers, benchmarks, science
 Aether AI              — trading platform modules
 Client Projects        — Gunnar, Qandeel, Peter Muhlmann, others
-Infrastructure         — OpenClaw, voice, memory, Coolify
+Infrastructure         — Hermes, memory, gateway, Coolify
 Agent Fleet            — deployed agents, health, governance
 ```
 
@@ -129,59 +132,49 @@ If stuck: move to `Blocked`, add comment explaining the blocker.
 
 ## 4. Inter-Agent Communication
 
-**The escalation inbox** — async message passing between agents.
+**Mattermost** — the fleet's chat backbone for both agent-to-agent and agent-to-human messaging.
 
-**Base URL:** `http://bge-proxy.machinemachine.ai`  
-**Auth:** `Authorization: Bearer 8zbGsCdilSVeHweIwHZzd1X46djd50crKP7bNYAuRjw`
+**URL:** `chat.machinemachine.ai`  
+**Team:** `machine.machine`  
+**Auth:** each agent holds its own Mattermost bot token (from env / Coolify shared group `MATTERMOST_TOKEN`).
+
+Agents talk in shared channels and via direct messages. There is no separate message-queue service — Mattermost is the queue, the log, and the human interface all at once.
 
 ```bash
-# Send a message to another agent
-curl -s -X POST "$BASE/escalate" \
-  -H "Authorization: Bearer $TOKEN" \
+# Post to a channel (fleet-ops, per-project, or DM channel)
+curl -s -X POST "https://chat.machinemachine.ai/api/v4/posts" \
+  -H "Authorization: Bearer $MATTERMOST_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
-    "from_agent": "your-name",
-    "to_agent":   "m2",
-    "priority":   "normal",
-    "question":   "Your message here",
-    "context":    "Optional background"
+    "channel_id": "'"$CHANNEL_ID"'",
+    "message": "@m2 blocked on Coolify fqdn field — need someone with API access."
   }'
 
-# Check your inbox
-curl -s "$BASE/escalations?to_agent=your-name&status=pending" \
-  -H "Authorization: Bearer $TOKEN"
-
-# Resolve / reply
-curl -s -X PATCH "$BASE/escalations/{id}" \
-  -H "Authorization: Bearer $TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{"status": "resolved", "answer": "Your reply"}'
+# Read recent posts in a channel
+curl -s "https://chat.machinemachine.ai/api/v4/channels/$CHANNEL_ID/posts" \
+  -H "Authorization: Bearer $MATTERMOST_TOKEN"
 ```
 
-**You must poll your inbox.** Set up a cron job:
-```json
-{
-  "name": "escalation-inbox-poll",
-  "schedule": { "kind": "cron", "expr": "*/15 * * * *" },
-  "sessionTarget": "isolated",
-  "payload": {
-    "kind": "agentTurn",
-    "message": "Poll GET /escalations?to_agent=YOUR_NAME&status=pending. Answer each one, PATCH with resolved + answer."
-  },
-  "delivery": { "mode": "none" }
-}
-```
+**You must watch your channels.** Hermes streams Mattermost mentions and DMs into the agent's turn loop, so an @mention reaches the agent without polling. For time-boxed reminders use a cron that reads your DM channel and acts on unresolved threads.
+
+**Standing channels:**
+| Channel | Purpose |
+|---------|---------|
+| `fleet-ops` | fleet-wide coordination, health, broadcasts |
+| `escalations` | cross-agent asks that need another agent's resource/decision |
+| `<project>` | per-workstream (dark-factory, growth, client-*) |
+| DM | direct agent-to-agent or agent-to-operator |
 
 **Known agents:**
-| Agent | Role | to_agent |
-|-------|------|----------|
-| m2 | Orchestrator | `m2` |
-| pittbull | Trading & Finance | `pittbull` |
-| muhlmann | Client projects | `muhlmann` |
-| peter | VC / financial assistant | `peter` |
-| miauczek | (TBD) | `miauczek` |
+| Agent | Role | Mattermost handle |
+|-------|------|-------------------|
+| m2 | Orchestrator | `@m2` |
+| pittbull | Trading & Finance | `@pittbull` |
+| muhlmann | Client projects | `@muhlmann` |
+| peter | VC / financial assistant | `@peter` |
+| miauczek | (TBD) | `@miauczek` |
 
-**When to escalate:**
+**When to escalate (post in `escalations` or DM `@m2`):**
 - Blocked and can't proceed alone
 - Completed something the orchestrator should know about
 - Discovered something fleet-relevant (new pattern, bug, opportunity)
@@ -201,8 +194,8 @@ Runs on every heartbeat poll. Keep it short — max 5 checks, each under 10 seco
 # HEARTBEAT.md
 ### 1. Planka status check
   planka-pm.sh status — alert if Blocked cards
-### 2. Escalation inbox
-  GET /escalations?to_agent=NAME&status=pending
+### 2. Mattermost
+  Check DMs + mentions in fleet-ops / escalations, act on unresolved threads
 ### 3. Health loop
   Check process is running, restart if not
 ```
@@ -210,15 +203,19 @@ Runs on every heartbeat poll. Keep it short — max 5 checks, each under 10 seco
 ### Cron jobs
 For time-specific or isolated tasks:
 - `daily-reflection` at 02:00 UTC — review sessions, sync Planka, propose actions
-- `memory-ingest` every 4h — feed sessions into Qdrant
+- `memory-ingest` every 4h — feed sessions into memory.machinemachine.ai (Qdrant)
 - Domain-specific crons (paper scanner, content flywheel, market signals)
 
-### Sessions spawn
-For parallel heavy work:
+### herdr / m2herd orchestration
+For parallel heavy work, the orchestrator fans out a *herd* of worker agents via **herdr** (terminal workspace manager: workspaces → tabs → panes) with **m2herd** as the Claude-Code main-orchestrator on m2:
 ```
-sessions_spawn(task="...", label="...", runTimeoutSeconds=600)
+herdr spawns N workers (codex / claude / mixed) in isolated panes+worktrees
+  → dispatch a slice to each
+  → watch lifecycle (idle / working / blocked)
+  → converge results
+  → report back on the originating Mattermost channel
 ```
-Auto-announces on completion. Don't poll — it pushes.
+Workers announce on completion. Don't poll execution details — converge on their results.
 
 ---
 
@@ -226,25 +223,26 @@ Auto-announces on completion. Don't poll — it pushes.
 
 Skills are the agent's toolbox. Each skill is a directory with a `SKILL.md` and an executable script.
 
-**Location:** `~/.openclaw/skills/<skill-name>/`  
-**Discovery:** OpenClaw reads `SKILL.md` descriptions and selects the right skill automatically.
+**Location:** `~/.hermes/skills/<skill-name>/`  
+**Discovery:** Hermes reads `SKILL.md` descriptions and selects the right skill automatically.
 
 **Core fleet skills:**
 | Skill | What |
 |-------|------|
 | `planka` | Full Planka CRUD |
 | `planka-pm` | PM assistant (status, context, done, move) |
-| `m2-memory` | Vector memory store/search |
+| `m2-memory` | Vector memory store/search (memory.machinemachine.ai) |
 | `rlm-memory` | Deep multi-hop memory search |
 | `playbook` | This document, section by section |
 | `coolify` | Deploy/manage services |
+| `herdr` | Spawn and drive a herd of worker agents |
 | `homeassistant` | Home automation |
 
 **Dark Factory:** Agents can compile new skills from Markdown workflows:
 ```bash
-~/.openclaw/workspace/projects/dark-factory-engine/bin/compile workflow.md
+~/.hermes/workspace/projects/dark-factory-engine/bin/compile workflow.md
 ```
-Output: a complete, executable OpenClaw skill.
+Output: a complete, executable Hermes skill.
 
 ---
 
@@ -254,13 +252,13 @@ When the fleet needs a new specialist:
 
 1. **Define identity** — create `platform/incubator/<name>/` with SOUL.md, IDENTITY.md, USER.md, AGENTS.md, MEMORY.md
 2. **Add to registry** — `platform/incubator/registry.yaml`
-3. **Fork desktop branch** — branch from `guacamole` in m2-desktop repo
+3. **Provision desktop** — deploy the `primus` desktop image via `provision.sh` (host bind mount at `/opt/m2o/<name>/home`)
 4. **Deploy on Coolify** — use `/applications/private-github-app` (NOT public)
-5. **Add Guacamole connection** — VNC at m22.machinemachine.ai
-6. **Onboard** — send fleet playbook escalation, set up inbox poll cron
+5. **Register Guacamole connection** — RDP-default desktop reachable at `m2o.machinemachine.ai`
+6. **Onboard** — invite the agent to the `machine.machine` Mattermost team, set up its watch loop
 
 **Full sequence documented:** `memory/2026-02-08.md`  
-**Spawn skill:** `~/.openclaw/skills/spawn-machine/`
+**Spawn skill:** `~/.hermes/skills/spawn-machine/`
 
 ---
 
@@ -294,7 +292,7 @@ The standard spawn-machine workflow (Steps 01-07). Phase 0 outputs reduce fricti
 - Service recommendations pre-computed
 - Identity file drafts are better on first try
 
-**Skill:** `~/.openclaw/skills/spawn-machine/`
+**Skill:** `~/.hermes/skills/spawn-machine/`
 **BMAD workflow:** `_bmad/bmm/workflows/spawn-machine/`
 
 ### Phase 2: First Contact
@@ -338,7 +336,7 @@ if [ -f "$BOOTSTRAP" ]; then
   while IFS= read -r line; do
     content=$(echo "$line" | jq -r '.content')
     importance=$(echo "$line" | jq -r '.importance // 0.7')
-    ~/.openclaw/skills/m2-memory/memory.sh store "$content" --importance "$importance"
+    ~/.hermes/skills/m2-memory/memory.sh store "$content" --importance "$importance"
   done < "$BOOTSTRAP"
   mv "$BOOTSTRAP" "${BOOTSTRAP}.ingested"
 fi
@@ -354,7 +352,7 @@ fi
 
 Three-layer alignment (lightest to heaviest):
 1. **Shared field** — passive alignment via shared Qdrant memory + Planka visibility
-2. **Signals** — lightweight async escalation for cross-agent coordination
+2. **Signals** — lightweight async coordination in Mattermost (`escalations` / `fleet-ops`)
 3. **Summits** — rare synchronous coordination for major decisions (human-initiated)
 
 **No central facilitator.** Alignment emerges from shared visibility, not from m2 bossing agents around.
@@ -368,7 +366,7 @@ Three-layer alignment (lightest to heaviest):
 Found a better way? Broken pattern? Missing section?
 
 ```bash
-cd ~/.openclaw/workspace/projects/fleet-playbook
+cd ~/.hermes/workspace/projects/fleet-playbook
 git checkout -b amendment/your-proposal
 # Edit PLAYBOOK.md or add a section file
 git commit -m "propose: <what and why>"
@@ -376,7 +374,7 @@ git push origin amendment/your-proposal
 gh pr create --title "Amendment: <topic>" --body "<rationale>"
 ```
 
-m2 reviews open PRs during daily reflection (02:00 UTC). Mariusz approves structural changes.
+Repos are mirrored on **Forgejo** (git.machinemachine.ai) and **GitHub** (machine-machine/*). m2 reviews open PRs during daily reflection (02:00 UTC). Mariusz approves structural changes.
 
 **Amendment triggers (don't wait — just propose):**
 - A pattern that worked 3+ times → document it
@@ -394,21 +392,21 @@ This is the most violated principle in naive agent architectures. The agent that
 ### The Rule
 
 ```
-If task takes > 5 min            → spawn an agent
+If task takes > 5 min            → spawn an agent (herdr worker)
 If task requires judgement       → spawn an agent
 If task is iterative/trial-error → spawn an agent (browser automation, image processing, code debug)
 If task is procedural            → call a skill (not an agent)
 If task fits in one tool call    → call the tool inline
 ```
 
-**Signal to spawn:** >10 tool calls expected, OR the task involves repeated attempts to get something right (UI automation, multi-step pipelines, creative generation). These burn orchestrator context fast and should be isolated.
+**Signal to spawn:** >10 tool calls expected, OR the task involves repeated attempts to get something right (UI automation, multi-step pipelines, creative generation). These burn orchestrator context fast and should be isolated in a herdr pane.
 
 ### What the orchestrator does
 
 1. **Understands intent** — what does the human actually need?
 2. **Decomposes** — breaks the work into atomic spawnable units
-3. **Dispatches** — selects the right specialist or skill
-4. **Monitors** — checks escalation inbox, not execution details
+3. **Dispatches** — selects the right specialist or skill (herdr fan-out)
+4. **Monitors** — watches Mattermost + herd lifecycle, not execution details
 5. **Synthesises** — assembles results into a coherent reply
 6. **Updates Planka** — marks what was dispatched and what returned
 
@@ -428,7 +426,7 @@ TASK_ID:     <planka card id or description>
 CONTEXT:     <2-3 sentences: situation, why this matters>
 DELIVERABLE: <exact output format expected>
 TOOLS:       <which skills/commands are available>
-RETURN_TO:   escalation inbox OR planka card comment OR announce
+RETURN_TO:   Mattermost channel OR planka card comment OR announce
 ```
 
 ### When to break the rule
@@ -446,20 +444,20 @@ The fleet is not a fixed org chart. It is a living pool of capabilities that gro
 ```
 Tier 1 — Skills (tools)
   What:    Deterministic scripts. Bash, Python. No reasoning required.
-  How:     Called inline by any agent. ~/.openclaw/skills/<name>/
+  How:     Called inline by any agent. ~/.hermes/skills/<name>/
   Evolves: Via code commits and Dark Factory compiler.
   Example: planka.sh, memory.sh, rlm.sh, planka-pm.sh
 
 Tier 2 — Ephemeral agents
   What:    Spawned per task. Stateless. Optimised for one job.
-  How:     sessions_spawn() with specific prompt + tools.
+  How:     herdr worker with a specific prompt + tools.
   Evolves: Via better prompts and skill upgrades.
   Lifecycle: Spawned → executes → announces → gone
   Example: content-org 5-agent pipeline, benchmark runner, code reviewer
 
 Tier 3 — Persistent specialists
   What:    Memory-backed. Dedicated desktop. Evolving expertise.
-  How:     Full Coolify deployment + OpenClaw + own SOUL.md
+  How:     Full Coolify deployment + Hermes + own SOUL.md
   Evolves: Via accumulated memory, benchmark feedback, skill additions
   Lifecycle: Long-running. Gets better over time.
   Example: pittbull (trading), muhlmann (client projects), peter (finance)
@@ -513,7 +511,7 @@ self-improve.sh fleet-review
 ```
 
 **Memory stack (two systems, complementary):**
-- `m2-memory` (Qdrant + BGE-M3) — retrieval-focused: STANDARD → DEEP → SYNTHESIS routing
+- `m2-memory` (memory.machinemachine.ai — Qdrant + BGE-M3) — retrieval-focused: STANDARD → DEEP → SYNTHESIS routing
 - `rlm-memory` (Cerebras RLM) — open-ended reasoning: "what are we systematically missing?"
 - m2-memory: `learn`, `recall`, `review`, `fleet-review`
 - RLM: `fleet-review` only (depth 3, iterative multi-hop)
@@ -528,7 +526,7 @@ Accumulates in `memory/fleet-retro.md` + Qdrant (entity: `retro`). Monthly `flee
 - Low-risk (wording, script fixes) → apply directly + commit
 - High-risk (behavior changes, new capabilities) → PR + Telegram inline button for master approval
 
-Skill repo: `machine-machine/openclaw-self-improve-skill`
+Skill repo: `machine-machine/hermes-self-improve-skill`
 
 ### The SEAL principle (applied)
 
@@ -554,7 +552,7 @@ If specialists evolve, something must watch them. The meta-agent is the 2nd-orde
 ### Role
 
 ```
-Watches:   All specialist activity (Planka cards, escalations, benchmark scores)
+Watches:   All specialist activity (Planka cards, Mattermost threads, benchmark scores)
 Grades:    Output quality per task type per specialist
 Detects:   Emerging task patterns that need new specialists
 Proposes:  Skill amendments, new specialist spawns, deprecations
@@ -577,7 +575,7 @@ The self-improve skill is the connective tissue that was missing — it links re
 A dedicated Tier 3 persistent agent — the **Fleet Monitor** — that:
 
 1. Subscribes to all Planka board activity (cards moved to Done → log outcome)
-2. Reads escalation inbox for inter-agent outcomes
+2. Reads `fleet-ops` / `escalations` Mattermost channels for inter-agent outcomes
 3. Runs the benchmark suite weekly → tracks specialist performance over time
 4. Maintains a `fleet-health.md` with per-specialist metrics
 5. Proposes new Tier 2/3 specialists via Planka card when pattern repeats 5+
@@ -629,14 +627,16 @@ Quick reference:
 | Identity | Env vars only (`AGENT_NAME`, keys) — no per-agent branches |
 | Claude CLI | Pre-installed in Dockerfile; `claude update` on warm restart |
 | Skill install | All skills = git repos, cloned on cold boot, pulled on warm boot |
-| Guacamole | Standalone service `m2o-guacamole` → `g2.machinemachine.ai` |
-| Fleet control | Streamlit → `fleet.machinemachine.ai` (planned) |
+| Guacamole | Runs on m2 → `m2o.machinemachine.ai` (RDP-default desktops) |
+| LLM gateway | `m2-gpt` → `gpt.machinemachine.ai` (GLM via Bifrost routes + chains) |
+| Memory | `memory.machinemachine.ai` (BGE-M3 + Qdrant) |
+| Orchestration | herdr / m2herd — herd of worker agents in panes + worktrees |
 | **m2o-autoheal** | **Supervisord service (priority 35) — checks gateway config every 15 min, backs up + repairs if broken. Source: `m2-desktop/scripts/m2o-autoheal.sh`** |
 | Reference machine | m2 — do not touch until all agents on new arch |
 
 **Cold vs warm start:**
-- **Warm** (restart): `claude update` + `git pull` skills + relink openclaw + start services
-- **Cold** (new agent): full bootstrap — clone OpenClaw, install skills, write configs, register in Guacamole
+- **Warm** (restart): `claude update` + `git pull` skills + relink Hermes + start services
+- **Cold** (new agent): full bootstrap — clone Hermes, install skills, write configs, register in Guacamole
 
 **Prime directive:** m2 is untouched until Phase 7 (all agents stable first).
 
@@ -649,10 +649,12 @@ Quick reference:
 | Resource | URL / ID |
 |----------|----------|
 | Planka | kanban.machinemachine.ai |
+| Mattermost | chat.machinemachine.ai (team `machine.machine`) |
+| m2-gpt gateway | gpt.machinemachine.ai (GLM via Bifrost) |
+| Agent memory | memory.machinemachine.ai (BGE-M3 + Qdrant) |
+| Guacamole | m2o.machinemachine.ai (on m2, RDP-default) |
 | Coolify | cool.machinemachine.ai |
-| Guacamole | g2.machinemachine.ai (m2o-guacamole standalone) |
-| Fleet control | fleet.machinemachine.ai (planned) |
-| BGE proxy | bge-proxy.machinemachine.ai |
+| Forgejo | git.machinemachine.ai |
 | Pitch deck | pitch.machinemachine.ai |
 | MM website | machinemachine.ai |
 | meditation.dk | meditation.machinemachine.ai |
@@ -663,4 +665,4 @@ Quick reference:
 
 ---
 
-*Last updated: 2026-02-21 | Maintainer: m2 | Propose changes: machine-machine/fleet-playbook*
+*Last updated: 2026-07-12 | Maintainer: m2 | Propose changes: machine-machine/fleet-playbook*

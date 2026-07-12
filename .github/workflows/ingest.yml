@@ -13,16 +13,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Notify fleet — trigger re-ingest via escalation inbox
+      - name: Notify fleet — trigger re-ingest via Mattermost
         run: |
-          curl -s -X POST "https://bge-proxy.machinemachine.ai/escalate" \
-            -H "Authorization: Bearer ${{ secrets.FLEET_TOKEN }}" \
+          curl -s -X POST "https://chat.machinemachine.ai/api/v4/posts" \
+            -H "Authorization: Bearer ${{ secrets.MATTERMOST_TOKEN }}" \
             -H "Content-Type: application/json" \
             -d '{
-              "from_agent": "github-actions",
-              "to_agent": "m2",
-              "priority": "normal",
-              "question": "Playbook updated on main branch. Please re-ingest PLAYBOOK.md into Qdrant fleet memory namespace. Run: python3 ~/.openclaw/skills/m2-memory/scripts/ingest_sessions.py -v --source /home/developer/.openclaw/workspace/projects/fleet-playbook/PLAYBOOK.md",
-              "context": "Triggered by push to machine-machine/fleet-playbook main. Commit: ${{ github.sha }}. Changed files: PLAYBOOK.md"
+              "channel_id": "${{ secrets.FLEET_OPS_CHANNEL_ID }}",
+              "message": "@m2 Playbook updated on main. Please re-ingest PLAYBOOK.md into memory.machinemachine.ai (Qdrant fleet namespace). Run: python3 ~/.hermes/skills/m2-memory/scripts/ingest_sessions.py -v --source ~/.hermes/workspace/projects/fleet-playbook/PLAYBOOK.md  (commit ${{ github.sha }})"
             }'
-          echo "Escalation sent to m2 for re-ingest"
+          echo "Re-ingest request posted to Mattermost fleet-ops for m2"

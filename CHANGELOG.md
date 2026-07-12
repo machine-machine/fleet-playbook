@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.3.0] — 2026-07-12
+### Changed — truth pass: docs now match the live fleet
+- **Comms:** the old async message-passing proxy → **Mattermost** (chat.machinemachine.ai, team `machine.machine`). Removed the dead comms service and its API from §4, RUNCARD, README, and the ingest workflow.
+- **Runtime:** the old agent runtime → **Hermes** (`~/.hermes` paths throughout; `hermes-gateway`, `HERMES_HOME`).
+- **Desktops:** Guacamole moved off the standalone `g2` host → **Guacamole on m2** at `m2o.machinemachine.ai` (RDP-default).
+- Planka unchanged (kanban.machinemachine.ai).
+### Added
+- **m2-gpt gateway** — `gpt.machinemachine.ai`, GLM served via Bifrost routes + chains (RUNCARD, §13, appendix).
+- **memory.machinemachine.ai** — the M² agent memory system (BGE-M3 + Qdrant hybrid search, 3-tier, per-agent namespaces) named explicitly in §2/§6/§11.
+- **herdr / m2herd** orchestration — fan-out to a herd of worker agents in panes + worktrees (§5, §10, §11).
+- **primus** desktop image + `provision.sh` spawn path (§7, §13).
+- **Forgejo + GitHub** mirrored git hosting (§9, appendix).
+### Security
+- Removed the live bearer token that was published on `main` in the RUNCARD and §4. Git history NOT rewritten — see `## NEEDS OPERATOR` in `.WAVE_REPORT.md`: the token must be rotated.
+### Version
+- Version bump 0.2.0 → 0.3.0
+
 ## [0.2.0] — 2026-02-19
 ### Added
 - Section 10: Orchestrator Pattern — conductor/player separation, structured spawn handoff, when to break the rule
