@@ -1,5 +1,14 @@
 # Changelog
 
+## [Unreleased] — 2026-08-24
+### Added
+- Section 12b: m2o Desktop Provisioning (RDP + cross-host Guacamole) — captures the m2/m2.2 topology, path/DNS gotchas, first-boot `unhealthy` wait, expected WARNs on m2.2, and the socat-relay pattern for wiring m2.2 desktops into m2's Guacamole.
+- `scripts/launch-m2o-desktop.sh` — idempotent one-command wrapper around `provision.sh` + relay + Guacamole upsert + perm grant. Installed on m2 (`~/m2o/desktop/launch-desktop.sh`) and m2.2 (`~/machinemachine-core/m2o/desktop/launch-desktop.sh`).
+
+### Authors
+- Mariusz (operator) — hit the pain, asked for the doc + script
+- Fable — end-to-end euroclean provisioning + doc/script extraction
+
 ## [0.2.0] — 2026-02-19
 ### Added
 - Section 10: Orchestrator Pattern — conductor/player separation, structured spawn handoff, when to break the rule

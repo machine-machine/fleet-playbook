@@ -617,6 +617,131 @@ Each cycle, the fleet gets more capable. This is not metaphor — it is the mech
 
 ---
 
+## 12b. m2o Desktop Provisioning (RDP + cross-host Guacamole)
+
+Every fleet agent runs on an **m2o desktop** — a persistent Ubuntu container with `x11vnc`, `xrdp`, `guacd`, `ttyd`, and Hermes baked in (primus image). Two hosts run desktops today:
+
+| Host | LAN IP(s) | SSH user | provision.sh path | Local Guacamole? |
+|------|-----------|----------|-------------------|------------------|
+| **m2** (primary) | `192.168.31.224`, `192.168.31.28` | `m2` | `~/m2o/desktop/provision.sh` | ✅ `guacamole-full` + `guacamole-db` (Coolify service `e0o8o8cowkswcwsgs4so48s8`) |
+| **m2.2** (secondary) | `192.168.31.34` | `m2.2` | `~/machinemachine-core/m2o/desktop/provision.sh` | ❌ own Coolify, no Guacamole stack |
+
+> **Path gotcha:** on m2.2 the script is under `~/machinemachine-core/m2o/`, not `~/m2o/`. The `m2o-provision` skill doc uses the upstream `~/m2o/` path — treat as advisory, not literal for m2.2.
+
+> **DNS gotcha:** from inside fleet docker containers (e.g. anything on the `coolify` network), both `m2` and `m2.2` frequently resolve to the *same* tailnet address (whichever host the container runs on). When you need to reach the *other* host, use its LAN IP, not the name.
+
+### Spawn a desktop — one command, full setup
+
+Use the **`launch-desktop.sh`** wrapper (installed at `~/m2o/desktop/launch-desktop.sh` on m2 and `~/machinemachine-core/m2o/desktop/launch-desktop.sh` on m2.2; canonical source: `scripts/launch-m2o-desktop.sh` in this repo). It runs `provision.sh`, waits for healthy, creates the socat guacd relay (m2.2 only), upserts the Guacamole RDP row on m2, and grants perms — all idempotent.
+
+```bash
+# on the target host, as its own user (m2 or m2.2)
+cd ~/m2o/desktop      # or ~/machinemachine-core/m2o/desktop on m2.2
+./launch-desktop.sh <name> [--vnc-pass X] [--grant-users guacadmin,m2,...]
+```
+
+Flags: `--relay-port <n>` (default: auto-pick next `X4822`), `--m2-ssh <user@host>` (default `m2@192.168.31.224`), `--skip-guacamole`, `--force-recreate`.
+
+**Raw provision (if you only want the container, no Guacamole wiring):**
+
+```bash
+cd ~/m2o/desktop      # or ~/machinemachine-core/m2o/desktop on m2.2
+./provision.sh <name> [vnc_password]     # e.g. ./provision.sh euroclean
+```
+
+Creates container `<name>-m2o` on the `coolify` docker network + named volumes `<name>-{agent-home,workspace,m2home}` (survive re-provision). `M2_GPT_API_KEY` is injected from `~/.m2-gpt-key` (host side, per-user). Fleet standard 2026-07-09: **RDP is the default access path**; VNC is fallback.
+
+### First-boot wait (~2 min "unhealthy" is normal)
+
+The entrypoint does a long `rm -rf /home` before x11vnc/xrdp start. The container will show `unhealthy` and ports 5900/3389 will refuse connections for 60–120s. Don't kill it — the health check flips once services come up. To watch:
+
+```bash
+docker inspect <name>-m2o --format '{{.State.Health.Status}}'
+docker exec <name>-m2o bash -lc 'ps -eo pid,etime,cmd | grep -E "rm -rf|x11vnc|xrdp|guacd" | grep -v grep'
+```
+
+### Expected WARNs on m2.2 (harmless — not bugs)
+
+Because m2.2 doesn't yet run its own Guacamole or console-auth:
+
+- `WARN: guacamole-db container not found — create the connection manually`
+- `WARN console: console-auth:latest image missing — cred saved to secrets.env`
+
+Traefik route for the ttyd web console is written, but `/console/<name>` won't work until console-auth is deployed to m2.2.
+
+### Wiring an m2.2 desktop into m2's Guacamole
+
+m2's `guacamole-full` needs to speak the guacd protocol to the desktop container (port 4822). On m2.2 that port lives inside the container on the `coolify` docker network — not published to the host. The established pattern is a **per-desktop `alpine/socat` relay** on m2.2 that publishes a unique host port and forwards to the desktop's internal `guacd:4822`.
+
+Existing port allocations (append your own):
+
+| Desktop | Host port on m2.2 |
+|---------|-------------------|
+| dealflow-legacy | 14822 |
+| dealflow | 24823 |
+| m2o-operator | 24822 |
+| euroclean | 34822 |
+
+**Step 1 — publish guacd on m2.2:**
+
+```bash
+# on m2.2, pick an unused port
+docker run -d --name <name>-guacd-relay --restart unless-stopped \
+  --network coolify -p <PORT>:<PORT> \
+  alpine/socat tcp-listen:<PORT>,fork,reuseaddr tcp:<name>-m2o:4822
+```
+
+**Step 2 — insert Guacamole connection on m2** (via `guacamole-db`, user `root` / `guacamole_root_pass`):
+
+```sql
+INSERT INTO guacamole_connection (connection_name, protocol, proxy_hostname, proxy_port)
+VALUES ('<Name> Desktop', 'rdp', '192.168.31.34', <PORT>);
+SET @id = LAST_INSERT_ID();
+
+INSERT INTO guacamole_connection_parameter (connection_id, parameter_name, parameter_value) VALUES
+  (@id,'hostname','127.0.0.1'), (@id,'port','3389'),
+  (@id,'username','developer'), (@id,'password','<vnc_password>'),
+  (@id,'width','1920'), (@id,'height','1080'), (@id,'color-depth','32'),
+  (@id,'security','any'), (@id,'ignore-cert','true'),
+  (@id,'enable-drive','true'), (@id,'drive-name','Shared'),
+  (@id,'drive-path','/home/developer/Desktop/Shared'),
+  (@id,'create-drive-path','true'), (@id,'enable-sftp','false');
+
+INSERT INTO guacamole_connection_permission (entity_id, connection_id, permission)
+SELECT e.entity_id, @id, p.perm
+FROM guacamole_entity e
+CROSS JOIN (SELECT 'READ' AS perm UNION ALL SELECT 'UPDATE'
+            UNION ALL SELECT 'DELETE' UNION ALL SELECT 'ADMINISTER') p
+WHERE e.name = 'guacadmin' AND e.type = 'USER';
+```
+
+**Critical schema gotchas** (inherited from m2's Guacamole):
+
+- `proxy_hostname` / `proxy_port` live on the `guacamole_connection` table, **not** on `guacamole_connection_parameter`.
+- `hostname` inside the connection parameters stays `127.0.0.1` — guacd runs *inside* the desktop container, right next to x11vnc/xrdp.
+- Use the `root` mysql user for writes. `guacamole_user` is SELECT-only.
+
+**Naming standard 2026-07-09:** plain `'<Name> Desktop'` = RDP (default). Append `' (VNC)'` only for the fallback VNC row if you also create one.
+
+### Access without Guacamole (m2.2 direct)
+
+```bash
+IP=$(docker inspect <name>-m2o --format '{{(index .NetworkSettings.Networks "coolify").IPAddress}}')
+# from m2.2:            RDP client → $IP:3389   (developer / <vnc_password>)
+# from a workstation:   ssh -L 3389:$IP:3389 m2.2@192.168.31.34, then RDP to localhost:3389
+```
+
+### Managing
+
+```bash
+docker ps --filter name=-m2o                          # list all m2o desktops on this host
+docker rm -f <name>-m2o && ./provision.sh <name>      # rebuild (volumes preserved)
+docker volume ls | grep <name>-                       # named volumes
+docker inspect <name>-m2o --format '{{.State.Health.Status}}'
+```
+
+---
+
 ## 13. Infrastructure Architecture
 
 The full infrastructure spec lives in: **[sections/architecture.md](sections/architecture.md)**
