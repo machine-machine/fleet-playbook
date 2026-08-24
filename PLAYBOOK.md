@@ -660,14 +660,38 @@ docker inspect <name>-m2o --format '{{.State.Health.Status}}'
 docker exec <name>-m2o bash -lc 'ps -eo pid,etime,cmd | grep -E "rm -rf|x11vnc|xrdp|guacd" | grep -v grep'
 ```
 
-### Expected WARNs on m2.2 (harmless — not bugs)
+### Expected WARNs on m2.2
 
-Because m2.2 doesn't yet run its own Guacamole or console-auth:
+Because m2.2 doesn't yet run its own Guacamole and only bridges console-auth via socat:
 
-- `WARN: guacamole-db container not found — create the connection manually`
-- `WARN console: console-auth:latest image missing — cred saved to secrets.env`
+- `WARN: guacamole-db container not found — create the connection manually` — expected. Wire via `launch-desktop.sh` or the SQL in the next subsection.
+- `WARN console: console-auth:latest image missing — cred saved to secrets.env` — expected. m2.2 doesn't host the console-auth image; a socat container named `console-auth` on m2.2's `coolify` network forwards `:8080` to `192.168.31.224:28080` (m2's `console-auth-lan-relay`), so Traefik's `forwardAuth` middleware works transparently. The cred **does still need to reach m2**: append the entry from `~/machinemachine-core/m2o/console-auth/secrets.env` (the `"<name>":"admin:..."` line inside `CONSOLE_BASIC_CREDS`) into m2's `~/m2o/console-auth/secrets.env` and restart `console-auth` on m2. See [Console (ttyd)](#console-ttyd-magic-link-flow) below.
 
-Traefik route for the ttyd web console is written, but `/console/<name>` won't work until console-auth is deployed to m2.2.
+### Console (ttyd, magic-link flow)
+
+The `/console/<desktop>` browser terminal is served by ttyd inside the desktop container, fronted by Traefik with a `forwardAuth` middleware pointing at `console-auth`. There is only **one real `console-auth`** in the fleet — it runs on m2 (FastAPI, `console-auth:latest`, source at `~/m2o/console-auth/`). Both hosts route to it:
+
+- **m2 desktops** → m2's Traefik → `console-auth` (same docker network) → ttyd inside the desktop container. Public host: `m2o.machinemachine.ai`.
+- **m2.2 desktops** → m2.2's Traefik (public host: `console.m-2.cc`, Cloudflare) → m2.2's socat `console-auth` → m2's `console-auth-lan-relay:28080` → real console-auth on m2 → response back up the chain. ttyd is inside the desktop container on m2.2.
+
+**Two things must be in sync per desktop** for the browser console to work:
+
+1. **Traefik router `Host()`** must match the desktop's host (`m2o.machinemachine.ai` on m2, `console.m-2.cc` on m2.2). Old `provision.sh` hardcoded `m2o.machinemachine.ai` for both — **patched 2026-08-24** to read `CONSOLE_PUBLIC_HOST` from `console-auth/secrets.env` (m2.2's secrets sets it to `console.m-2.cc`; m2 leaves the default).
+2. **The cred entry** (auto-generated per desktop by provision.sh into the local `secrets.env`) must exist in m2's `CONSOLE_BASIC_CREDS`. On m2 that's automatic (provision.sh redeploys the local console-auth). On m2.2 you must manually copy the `"<name>":"admin:..."` entry into m2's `~/m2o/console-auth/secrets.env` and `docker rm -f console-auth && docker run -d --name console-auth --restart unless-stopped --network coolify --env-file secrets.env console-auth:latest && docker network connect e0o8o8cowkswcwsgs4so48s8 console-auth`.
+
+**Mint a magic link (admin key, from anywhere on m2):**
+
+```bash
+source ~/m2o/console-auth/secrets.env
+CA_IP=$(docker inspect console-auth --format '{{(index .NetworkSettings.Networks "coolify").IPAddress}}')
+curl -s -X POST -H "X-Api-Key: $CONSOLE_AUTH_ADMIN_KEY" \
+     -H 'Content-Type: application/json' \
+     -d '{"desktop":"<name>"}' \
+     http://$CA_IP:8080/issue
+# → returns {"url":"https://m2o.machinemachine.ai/console/<name>/?t=..."}
+# For m2.2 desktops, swap the host to console.m-2.cc — the token is valid on any host
+# (verify uses x-forwarded-host). Link is single-use, 15 min; session cookie is 24 h.
+```
 
 ### Wiring an m2.2 desktop into m2's Guacamole
 

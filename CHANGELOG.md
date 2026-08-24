@@ -2,8 +2,11 @@
 
 ## [Unreleased] — 2026-08-24
 ### Added
-- Section 12b: m2o Desktop Provisioning (RDP + cross-host Guacamole) — captures the m2/m2.2 topology, path/DNS gotchas, first-boot `unhealthy` wait, expected WARNs on m2.2, and the socat-relay pattern for wiring m2.2 desktops into m2's Guacamole.
+- Section 12b: m2o Desktop Provisioning (RDP + cross-host Guacamole + console/ttyd) — captures the m2/m2.2 topology, path/DNS gotchas, first-boot `unhealthy` wait, expected WARNs on m2.2, the socat-relay pattern for wiring m2.2 desktops into m2's Guacamole, and the console-auth magic-link flow (single real console-auth on m2, m2.2 bridges via socat).
 - `scripts/launch-m2o-desktop.sh` — idempotent one-command wrapper around `provision.sh` + relay + Guacamole upsert + perm grant. Installed on m2 (`~/m2o/desktop/launch-desktop.sh`) and m2.2 (`~/machinemachine-core/m2o/desktop/launch-desktop.sh`).
+
+### Fixed
+- `desktop/provision.sh` (both hosts) — Traefik router `Host()` was hardcoded to `m2o.machinemachine.ai`, breaking `/console/<name>` for every m2.2-hosted desktop (m2o.machinemachine.ai points at m2, not m2.2). Now reads `CONSOLE_PUBLIC_HOST` from `console-auth/secrets.env` (m2.2 has it set to `console.m-2.cc`; m2 defaults to `m2o.machinemachine.ai`). Also patched the existing `console-euroclean.yaml` in place.
 
 ### Authors
 - Mariusz (operator) — hit the pain, asked for the doc + script
