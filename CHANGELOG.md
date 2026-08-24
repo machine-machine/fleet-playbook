@@ -7,6 +7,11 @@
 
 ### Fixed
 - `desktop/provision.sh` (both hosts) — Traefik router `Host()` was hardcoded to `m2o.machinemachine.ai`, breaking `/console/<name>` for every m2.2-hosted desktop (m2o.machinemachine.ai points at m2, not m2.2). Now reads `CONSOLE_PUBLIC_HOST` from `console-auth/secrets.env` (m2.2 has it set to `console.m-2.cc`; m2 defaults to `m2o.machinemachine.ai`). Also patched the existing `console-euroclean.yaml` in place.
+- `scripts/launch-m2o-desktop.sh` — removed the `docker restart guacamole-full` step from step 5. Guacamole picks up DB changes on next login/session; the restart invalidated every active user's session cookie and made connections briefly appear to "disappear" from the UI.
+
+### Deployed (side-effects of this session)
+- **m2o-console-link Guacamole extension** — the `Console ↗` button on each Guacamole home-screen connection row (source: `~/m2o/guacamole-ext/console-link/` on m2). Extension was already fully written; wasn't installed. Built + deployed via `install-console-link.sh`.
+- **`CONSOLE_HOST_OVERRIDES` env in console-auth** — new optional env, JSON `{slug: host}`. `_host_for(desktop)` returns the override or falls back to `PUBLIC_HOST`. Needed so `/issue` and `/issue-web` return `console.m-2.cc` URLs for m2.2 desktops. Patched into `~/m2o/console-auth/app.py` on m2; container rebuilt + redeployed. `launch-desktop.sh` now auto-updates this map when provisioning a new m2.2 desktop.
 
 ### Authors
 - Mariusz (operator) — hit the pain, asked for the doc + script

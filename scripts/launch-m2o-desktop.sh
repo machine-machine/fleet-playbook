@@ -201,6 +201,42 @@ else
       ($CONN_ID,'create-drive-path','true'), ($CONN_ID,'enable-sftp','false');
   "
 
+  # ---------- 4b. m2.2 host override for console-auth (Guacamole "Console" button) ----------
+  if [[ "$HOST_ROLE" == "m2.2" ]]; then
+    echo ">> [4b/5] recording console host override for '$NAME' → console.m-2.cc"
+    ssh -o BatchMode=yes "$M2_SSH" bash -s "$NAME" <<'REMOTE'
+set -e
+NAME="$1"
+cd ~/m2o/console-auth
+python3 - "$NAME" <<'PY'
+import json, pathlib, sys, re
+name = sys.argv[1]
+p = pathlib.Path("secrets.env")
+lines = p.read_text().splitlines()
+found = False
+for i, l in enumerate(lines):
+    if l.startswith("CONSOLE_HOST_OVERRIDES="):
+        raw = l[len("CONSOLE_HOST_OVERRIDES="):].strip()
+        d = json.loads(raw) if raw else {}
+        if d.get(name) == "console.m-2.cc":
+            print("already-set"); sys.exit(0)
+        d[name] = "console.m-2.cc"
+        lines[i] = "CONSOLE_HOST_OVERRIDES=" + json.dumps(d, separators=(",", ":"))
+        found = True
+        break
+if not found:
+    lines.append('CONSOLE_HOST_OVERRIDES={"' + name + '":"console.m-2.cc"}')
+p.write_text("\n".join(lines) + "\n")
+print("added")
+PY
+docker rm -f console-auth >/dev/null 2>&1 || true
+docker run -d --name console-auth --restart unless-stopped \
+  --network coolify --env-file secrets.env console-auth:latest >/dev/null
+docker network connect e0o8o8cowkswcwsgs4so48s8 console-auth 2>/dev/null || true
+echo "   console-auth redeployed on m2 with '$NAME' host override"
+REMOTE
+  fi
+
   # ---------- 5. perms ----------
   echo ">> [5/5] granting perms to: $GRANT_USERS"
   IFS=',' read -ra USERS <<<"$GRANT_USERS"
@@ -218,14 +254,10 @@ else
     echo "   granted: $u_trim"
   done
 
-  # refresh guacamole-full so it picks up the new/updated row immediately
-  echo "   refreshing guacamole-full (restart)"
-  if [[ "$HOST_ROLE" == "m2" ]]; then
-    FULL=$(docker ps --format '{{.Names}}' | grep -m1 guacamole-full || true)
-    [[ -n "$FULL" ]] && docker restart "$FULL" >/dev/null
-  else
-    ssh -o BatchMode=yes "$M2_SSH" 'FULL=$(docker ps --format "{{.Names}}" | grep -m1 guacamole-full); [ -n "$FULL" ] && docker restart "$FULL" >/dev/null'
-  fi
+  # Guacamole picks up DB changes on next login/session — no restart needed.
+  # (An earlier version of this script restarted guacamole-full here; that
+  # invalidated every active user's session and made connections appear to
+  # "disappear" until they logged back in. Removed 2026-08-24.)
 fi
 
 # ---------- summary ----------

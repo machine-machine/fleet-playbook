@@ -679,7 +679,17 @@ The `/console/<desktop>` browser terminal is served by ttyd inside the desktop c
 1. **Traefik router `Host()`** must match the desktop's host (`m2o.machinemachine.ai` on m2, `console.m-2.cc` on m2.2). Old `provision.sh` hardcoded `m2o.machinemachine.ai` for both — **patched 2026-08-24** to read `CONSOLE_PUBLIC_HOST` from `console-auth/secrets.env` (m2.2's secrets sets it to `console.m-2.cc`; m2 leaves the default).
 2. **The cred entry** (auto-generated per desktop by provision.sh into the local `secrets.env`) must exist in m2's `CONSOLE_BASIC_CREDS`. On m2 that's automatic (provision.sh redeploys the local console-auth). On m2.2 you must manually copy the `"<name>":"admin:..."` entry into m2's `~/m2o/console-auth/secrets.env` and `docker rm -f console-auth && docker run -d --name console-auth --restart unless-stopped --network coolify --env-file secrets.env console-auth:latest && docker network connect e0o8o8cowkswcwsgs4so48s8 console-auth`.
 
-**Mint a magic link (admin key, from anywhere on m2):**
+### Guacamole "Console ↗" button (m2o-console-link extension)
+
+A tiny Guacamole extension (`~/m2o/guacamole-ext/console-link/` on m2) adds a `Console ↗` button next to each connection on the Guacamole home page. Click → POST to `/console-mint/issue-web` with the current Guacamole session token → console-auth validates the caller against the Guacamole REST API, mints a magic link for that desktop, and the browser opens the URL in a new tab.
+
+- **Traefik route:** `/data/coolify/proxy/dynamic/console-mint.yaml` on m2 exposes `console-auth` at `Host(m2o.machinemachine.ai) && PathPrefix(/console-mint)` with a `stripPrefix` middleware. Same origin as Guacamole, so no CORS.
+- **Which rows get a button:** the extension calls `/console-mint/consoles` to get the list of desktop slugs; rows whose name slugifies onto a known desktop show the button. Everything else is hidden.
+- **Per-desktop host in the returned URL:** by default `console-auth` returns `https://<CONSOLE_PUBLIC_HOST>/console/<name>/?t=<token>`. For m2.2-hosted desktops, the URL must instead be on `console.m-2.cc`. This is handled by the `CONSOLE_HOST_OVERRIDES` env in `~/m2o/console-auth/secrets.env` on m2 — a JSON dict `{slug: host}`. `launch-desktop.sh` on m2.2 auto-adds the new desktop to this map and redeploys `console-auth` on m2.
+- **Install / update the extension:** on m2, `bash ~/m2o/guacamole-ext/install-console-link.sh`. Rebuilds the JAR, stages it at `/data/coolify/guacamole-home/extensions/` (for the permanent GUACAMOLE_HOME bind mount), copies it into the live container, and reloads the webapp by `touch`ing `web.xml` — no container restart, no session invalidation.
+- **Why not a container restart:** the Guacamole entrypoint runs `rm -Rf $HOME/.guacamole` on every container start, which wipes JARs dropped into `~/.guacamole/extensions/`. The bind-mount + `touch web.xml` pattern is the durable install path.
+
+### Mint a magic link (admin key, from anywhere on m2)
 
 ```bash
 source ~/m2o/console-auth/secrets.env
