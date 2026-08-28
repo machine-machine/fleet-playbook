@@ -689,6 +689,67 @@ A tiny Guacamole extension (`~/m2o/guacamole-ext/console-link/` on m2) adds a `C
 - **Install / update the extension:** on m2, `bash ~/m2o/guacamole-ext/install-console-link.sh`. Rebuilds the JAR, stages it at `/data/coolify/guacamole-home/extensions/` (for the permanent GUACAMOLE_HOME bind mount), copies it into the live container, and reloads the webapp by `touch`ing `web.xml` — no container restart, no session invalidation.
 - **Why not a container restart:** the Guacamole entrypoint runs `rm -Rf $HOME/.guacamole` on every container start, which wipes JARs dropped into `~/.guacamole/extensions/`. The bind-mount + `touch web.xml` pattern is the durable install path.
 
+### Provisioning the m2-gpt tenant / agent / bearer
+
+Every desktop's Hermes talks to the fleet LLM gateway at `https://gpt.machinemachine.ai/v1`. It authenticates with a **per-agent** bearer (`sk-m2-...`), argon2-hashed at rest — not the fleet-wide `~/.m2-gpt-key` that `provision.sh` bakes in as a placeholder. Without a real per-agent bearer, the desktop is off-fleet: it shares tenancy, budget, and memory with `m2` itself.
+
+**One command** (installed alongside `launch-desktop.sh` on both hosts, canonical source: `scripts/m2gw-provision-agent.sh` in this repo):
+
+```bash
+# on m2 (or from m2.2 — script SSHes to m2 for gateway ops)
+m2gw-provision-agent.sh <slug>                                        # sensible defaults
+m2gw-provision-agent.sh <slug> --primary-route <id> \
+                               --fallback-route <id> \
+                               --default-model <name> \
+                               --principal <email> \
+                               --hermes-container <container>          # patches Hermes config
+```
+
+Idempotent: existing tenant is reused; existing agent has its `route_bindings` updated; **a fresh bearer is minted every run** (old ones stay `active` — revoke by hand if you want single-key hygiene). If `--hermes-container` matches a container running on this host, the script patches `/home/developer/.hermes/config.yaml` (`model.default` + `model.api_key`) and restarts `hermes-gateway`.
+
+**Defaults** (chosen 2026-08-28 for the euroclean bring-up):
+
+| Field | Value |
+|-------|-------|
+| Primary route (priority 1) | `spark-glm` — self-hosted spark cluster, `glm-5.3-flash` (multimodal, vision-capable) |
+| Fallback route (priority 2) | `deepseek-spark` — self-hosted spark, `deepseek-v4-flash-0731` (text) |
+| Hermes `model.default` | `m2gw-spark-glm/glm-5.3-flash` |
+| Tenant budget | $20/mo |
+| Retention | 90 days |
+
+> Note on model naming: the operator brief asked for `deepseek-v4-3107`. That model id isn't currently deployed on the fleet — the spark cluster serves `deepseek-v4-flash-0731`. Either rename the target model on the upstream, or add a new route entry in `routes` (see `scripts/set-default-route-chain.sh` in the m2-gpt repo for the pattern).
+
+**All at once via `launch-desktop.sh`:**
+
+```bash
+./launch-desktop.sh <name> --provision-m2gw \
+   [--m2gw-primary spark-glm] \
+   [--m2gw-fallback deepseek-spark] \
+   [--m2gw-model m2gw-spark-glm/glm-5.3-flash] \
+   [--m2gw-principal <email>]
+```
+
+Runs the same wrapper as step 6 after the desktop is healthy. The bearer is printed once — save it before it scrolls off.
+
+**Route inventory (read-only glance) — introspect the gateway DB:**
+
+```bash
+# on m2, inside the prod gateway container
+PGW=$(docker ps --format '{{.Names}}' | grep '^gateway-akvnse3p7' | head -1)
+docker exec $PGW python3 -c "
+import os, asyncio, asyncpg
+async def m():
+    URL=os.environ['M2GW_DATABASE_URL'].replace('postgresql+asyncpg://','postgresql://')
+    c=await asyncpg.connect(URL)
+    for r in await c.fetch('select id, provider, base_url, default_params->>' + chr(39) + 'model' + chr(39) + ' as model, usage_scope from routes order by id'):
+        print(dict(r))
+    await c.close()
+asyncio.run(m())
+"
+```
+
+Existing routes at the time of writing: `spark-glm` (glm-5.3-flash, spark cluster), `deepseek-spark` (deepseek-v4-flash-0731, spark), `glm-5.2` / `glm-5.2-zai` / `glm-5.3-zai` (Z.ai proxy), `qwen-fast` / `qwen-local` / `ornith-coding` (local coding models).
+
 ### Mint a magic link (admin key, from anywhere on m2)
 
 ```bash

@@ -25,6 +25,11 @@ GUAC_DB_ROOT_PASS="guacamole_root_pass"
 GUAC_DB_NAME="guacamole_db"
 SKIP_GUAC=false
 FORCE_RECREATE=false
+PROVISION_M2GW=false                # opt-in: create tenant/agent/key on gpt.machinemachine.ai
+M2GW_PRIMARY_ROUTE="spark-glm"
+M2GW_FALLBACK_ROUTE="deepseek-spark"
+M2GW_DEFAULT_MODEL="m2gw-spark-glm/glm-5.3-flash"
+M2GW_PRINCIPAL="hi@grait.io"
 
 usage() {
   cat <<EOF
@@ -39,6 +44,11 @@ Options:
   --m2-ssh <user@host>     SSH target for m2 (default: m2@192.168.31.224)
   --skip-guacamole         Skip Guacamole wiring (provision + relay only)
   --force-recreate         Rebuild container even if it exists (volumes preserved)
+  --provision-m2gw         Create tenant/agent/bearer on gpt.machinemachine.ai, wire Hermes
+  --m2gw-primary <id>      Route id for priority 1 (default: spark-glm — glm-5.3-flash)
+  --m2gw-fallback <id>     Route id for priority 2 (default: deepseek-spark)
+  --m2gw-model <name>      Hermes model.default (default: m2gw-spark-glm/glm-5.3-flash)
+  --m2gw-principal <email> Agent principal_ref (default: hi@grait.io)
   -h, --help               This help
 EOF
 }
@@ -56,6 +66,11 @@ while [[ $# -gt 0 ]]; do
     --m2-ssh)         M2_SSH="$2"; shift 2;;
     --skip-guacamole) SKIP_GUAC=true; shift;;
     --force-recreate) FORCE_RECREATE=true; shift;;
+    --provision-m2gw)   PROVISION_M2GW=true; shift;;
+    --m2gw-primary)     M2GW_PRIMARY_ROUTE="$2"; shift 2;;
+    --m2gw-fallback)    M2GW_FALLBACK_ROUTE="$2"; shift 2;;
+    --m2gw-model)       M2GW_DEFAULT_MODEL="$2"; shift 2;;
+    --m2gw-principal)   M2GW_PRINCIPAL="$2"; shift 2;;
     -h|--help)        usage; exit 0;;
     *) echo "ERROR: unknown option: $1"; usage; exit 1;;
   esac
@@ -260,6 +275,46 @@ REMOTE
   # "disappear" until they logged back in. Removed 2026-08-24.)
 fi
 
+# ---------- 6. m2-gpt tenant/agent/bearer + Hermes wire (opt-in) ----------
+M2GW_SUMMARY=""
+if $PROVISION_M2GW; then
+  echo ">> [6/6] m2-gpt: provision tenant+agent+bearer for '$NAME', wire Hermes"
+
+  # Locate the m2gw-provision-agent.sh companion script.
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  M2GW_SCRIPT="$SCRIPT_DIR/m2gw-provision-agent.sh"
+  if [[ ! -x "$M2GW_SCRIPT" ]]; then
+    for cand in "$HOME/m2o/desktop/m2gw-provision-agent.sh" \
+                "$HOME/machinemachine-core/m2o/desktop/m2gw-provision-agent.sh"; do
+      [[ -x "$cand" ]] && { M2GW_SCRIPT="$cand"; break; }
+    done
+  fi
+  if [[ ! -x "$M2GW_SCRIPT" ]]; then
+    echo "   WARN: m2gw-provision-agent.sh not found — install it alongside launch-desktop.sh"
+    echo "   skipping m2-gpt step"
+  else
+    if [[ "$HOST_ROLE" == "m2.2" ]]; then
+      # Runs the gateway ops on m2 via SSH, and wires the Hermes here on m2.2.
+      # Approach: run the script here (script is host-agnostic and uses --m2-ssh).
+      "$M2GW_SCRIPT" "$NAME" \
+        --primary-route "$M2GW_PRIMARY_ROUTE" \
+        --fallback-route "$M2GW_FALLBACK_ROUTE" \
+        --default-model "$M2GW_DEFAULT_MODEL" \
+        --principal "$M2GW_PRINCIPAL" \
+        --hermes-container "$CONTAINER" \
+        --m2-ssh "$M2_SSH"
+    else
+      "$M2GW_SCRIPT" "$NAME" \
+        --primary-route "$M2GW_PRIMARY_ROUTE" \
+        --fallback-route "$M2GW_FALLBACK_ROUTE" \
+        --default-model "$M2GW_DEFAULT_MODEL" \
+        --principal "$M2GW_PRINCIPAL" \
+        --hermes-container "$CONTAINER"
+    fi
+    M2GW_SUMMARY="  m2-gpt tenant/agent  $NAME   chain=$M2GW_PRIMARY_ROUTE → $M2GW_FALLBACK_ROUTE   model=$M2GW_DEFAULT_MODEL"
+  fi
+fi
+
 # ---------- summary ----------
 cat <<EOF
 
@@ -278,3 +333,4 @@ if ! $SKIP_GUAC; then
   guacamole URL       https://m2o.machinemachine.ai
 EOF
 fi
+[[ -n "$M2GW_SUMMARY" ]] && echo "$M2GW_SUMMARY"

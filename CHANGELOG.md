@@ -12,6 +12,12 @@
 ### Deployed (side-effects of this session)
 - **m2o-console-link Guacamole extension** — the `Console ↗` button on each Guacamole home-screen connection row (source: `~/m2o/guacamole-ext/console-link/` on m2). Extension was already fully written; wasn't installed. Built + deployed via `install-console-link.sh`.
 - **`CONSOLE_HOST_OVERRIDES` env in console-auth** — new optional env, JSON `{slug: host}`. `_host_for(desktop)` returns the override or falls back to `PUBLIC_HOST`. Needed so `/issue` and `/issue-web` return `console.m-2.cc` URLs for m2.2 desktops. Patched into `~/m2o/console-auth/app.py` on m2; container rebuilt + redeployed. `launch-desktop.sh` now auto-updates this map when provisioning a new m2.2 desktop.
+- **§12b subsection: Provisioning the m2-gpt tenant / agent / bearer** — every desktop's Hermes needs its own bearer (not the fleet-wide placeholder from `~/.m2-gpt-key`) to be a real fleet citizen. Documents the one-command `m2gw-provision-agent.sh` flow and the default route chain (spark-glm → deepseek-spark).
+- `scripts/m2gw-provision-agent.sh` — new idempotent one-command wrapper: creates the tenant + agent (with configurable route chain), mints a fresh bearer, and (optionally) patches the target desktop's Hermes `config.yaml` and restarts `hermes-gateway`. Installed on m2 (`~/m2-gpt/m2-gpt/scripts/` **and** `~/m2o/desktop/`) and m2.2 (`~/machinemachine-core/m2o/desktop/`).
+- `scripts/launch-m2o-desktop.sh` — new `--provision-m2gw` flag (+ `--m2gw-primary`, `--m2gw-fallback`, `--m2gw-model`, `--m2gw-principal`) makes the desktop spawn + gateway wire a single command.
+
+### Bring-up done this session
+- **euroclean tenant + agent + bearer** on `gpt.machinemachine.ai`, route chain `spark-glm → deepseek-spark`, Hermes on `euroclean-m2o` wired to the per-agent bearer with `model.default: m2gw-spark-glm/glm-5.3-flash`. End-to-end smoke passed (gateway → chain → LLM → response).
 
 ### Authors
 - Mariusz (operator) — hit the pain, asked for the doc + script
